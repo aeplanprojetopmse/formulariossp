@@ -1,0 +1,6 @@
+{
+  "name": "FPP - Gerador de Propostas de Projetos SSP/SE",
+  "description": "Elaboração e Geração de Formulários de Proposta de Projeto (FPP) da SSP/SE com IA Gemini (MVI, EVM, MQV) e envio integrado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
