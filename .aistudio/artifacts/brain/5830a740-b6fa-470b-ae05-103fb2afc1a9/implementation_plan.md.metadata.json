@@ -1,0 +1,6 @@
+{
+  "summary":  "Plano de configuração para compilação estática do Vite com caminhos relativos (base: './') para publicação via pasta dist no GitHub Pages, inclusão do arquivo .nojekyll e passo a passo de publicação.",
+  "updatedAt":  "2026-11-11T13:25:40.210452541Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
