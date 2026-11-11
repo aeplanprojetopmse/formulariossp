@@ -60,9 +60,21 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
 
     res.json({ text });
   } catch (err: any) {
+    const errMsg = err?.message || '';
+    if (
+      errMsg.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') ||
+      errMsg.includes('API key not valid') ||
+      errMsg.includes('UNAUTHENTICATED')
+    ) {
+      return res.status(401).json({
+        error:
+          'Chave de API inválida: A chave informada inicia com "AQ.", que é um token de sessão/OAuth. As chaves gratuitas da API do Gemini no Google AI Studio iniciam com "AIzaSy...". Gere uma chave em https://aistudio.google.com/apikey e cole nas Configurações (ícone ⚙️).',
+      });
+    }
+
     console.error('Erro na API Gemini:', err);
     res.status(500).json({
-      error: err.message || 'Erro ao comunicar com a API do Gemini.',
+      error: errMsg || 'Erro ao comunicar com a API do Gemini.',
     });
   }
 });
