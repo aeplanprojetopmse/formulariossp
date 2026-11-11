@@ -1,6 +1,6 @@
 node_modules/
 build/
-dist/
+# dist/ (permitido para upload online direto se necessario)
 coverage/
 .DS_Store
 *.log
