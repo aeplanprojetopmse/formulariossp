@@ -6,7 +6,6 @@ import {
   Send,
   Eye,
   Settings,
-  Github,
   FolderOpen,
   ChevronDown,
   Shield,
@@ -23,7 +22,6 @@ interface NavbarProps {
   onNewProject: (area: ThematicArea, blank?: boolean) => void;
   onOpenAiAssistant: () => void;
   onOpenPdfPreview: () => void;
-  onOpenGitGuide: () => void;
   onOpenSettings: () => void;
   onOpenProjectList: () => void;
 }
@@ -35,7 +33,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   onNewProject,
   onOpenAiAssistant,
   onOpenPdfPreview,
-  onOpenGitGuide,
   onOpenSettings,
   onOpenProjectList,
 }) => {
@@ -183,17 +180,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg bg-red-600 hover:bg-red-500 text-white shadow-md shadow-red-950/30 transition-all cursor-pointer hover:scale-102"
           >
             <Eye className="w-3.5 h-3.5" />
-            <span>Gerar / Enviar PDF</span>
-          </button>
-
-          {/* Git Guide */}
-          <button
-            type="button"
-            onClick={onOpenGitGuide}
-            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-            title="Como baixar e subir para o GitHub / Deploy Web"
-          >
-            <Github className="w-4 h-4" />
+            <span>Gerar PDF / Enviar à AEPLAN</span>
           </button>
 
           {/* Settings */}
@@ -201,7 +188,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             type="button"
             onClick={onOpenSettings}
             className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-            title="Configurar chave do Gemini ou URL do Apps Script"
+            title="Configurações (Chave Gemini e Integração AEPLAN)"
           >
             <Settings className="w-4 h-4" />
           </button>

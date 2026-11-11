@@ -24,7 +24,7 @@ export function saveStoredScriptUrl(url: string): void {
 }
 
 /**
- * Sends proposal PDF to Google Apps Script
+ * Sends proposal PDF to AEPLAN (via Google Apps Script Web App)
  */
 export async function sendPdfToAppsScript(
   fileName: string,
@@ -52,7 +52,7 @@ export async function sendPdfToAppsScript(
       const data = await proxyRes.json();
       return {
         status: data.status === 'success' || data.status === 200 ? 'success' : 'success',
-        message: data.message || 'Arquivo salvo com sucesso!',
+        message: data.message || 'Proposta enviada para a AEPLAN com sucesso!',
         fileId: data.fileId || '',
         fileUrl: data.fileUrl || '',
         raw: data,
@@ -86,15 +86,15 @@ export async function sendPdfToAppsScript(
 
     return {
       status: parsed.status === 'error' ? 'error' : 'success',
-      message: parsed.message || 'Arquivo enviado com sucesso ao Google Apps Script!',
+      message: parsed.message || 'Proposta enviada com sucesso para a AEPLAN!',
       fileId: parsed.fileId,
       fileUrl: parsed.fileUrl,
       raw: parsed,
     };
   } catch (directErr: any) {
-    console.error('Erro na chamada direta ao Apps Script:', directErr);
+    console.error('Erro no envio para a AEPLAN:', directErr);
     throw new Error(
-      `Falha no envio para o Google Apps Script: ${directErr.message || 'Erro de conexão/CORS'}. Verifique se a URL do Apps Script tem permissão de acesso aberto para 'Qualquer pessoa'.`
+      `Falha no envio para a AEPLAN: ${directErr.message || 'Erro de conexão/CORS'}. Verifique se o endpoint da AEPLAN está acessível.`
     );
   }
 }

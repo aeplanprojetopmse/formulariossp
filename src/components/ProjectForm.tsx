@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   FileText,
   Plus,
@@ -13,10 +13,14 @@ import {
   Mail,
   Award,
   Sparkles,
+  RotateCcw,
+  CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react';
 import { ProjectData, LocalizacaoItem, MaterialServicoItem } from '../types';
 import { FieldAiButton } from './FieldAiButton';
 import { formatCurrencyBRL } from '../services/pdfGenerator';
+import { createBlankProject } from '../data/templates';
 
 interface ProjectFormProps {
   project: ProjectData;
@@ -31,6 +35,23 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
   onOpenAiAssistant,
   onOpenPdfPreview,
 }) => {
+  const [showClearModal, setShowClearModal] = useState(false);
+  const [showClearSuccess, setShowClearSuccess] = useState(false);
+
+  const handleConfirmClear = () => {
+    const blank = createBlankProject(project.areaTematica);
+    onChange({
+      ...blank,
+      id: project.id,
+      numeroProposta: project.numeroProposta || blank.numeroProposta,
+      dataCriacao: project.dataCriacao || new Date().toISOString(),
+      dataAtualizacao: new Date().toISOString(),
+    });
+    setShowClearModal(false);
+    setShowClearSuccess(true);
+    setTimeout(() => setShowClearSuccess(false), 3000);
+  };
+
   const updateField = <K extends keyof ProjectData>(field: K, value: ProjectData[K]) => {
     onChange({
       ...project,
@@ -148,45 +169,12 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  if (confirm('Deseja limpar todos os campos e deixar o formulário em branco?')) {
-                    onChange({
-                      ...project,
-                      titulo: '',
-                      responsavelTecnico: '',
-                      postoGraduacaoCargo: '',
-                      lotacao: '',
-                      telefone: '',
-                      email: '',
-                      objetivoGeral: '',
-                      objetivosEspecificos: '',
-                      justificativa: '',
-                      publicoAlvoDireto: '',
-                      publicoAlvoIndireto: '',
-                      resultadosEsperados: '',
-                      metas: '',
-                      sustentabilidade: '',
-                      mensuracaoResultados: '',
-                      planoLocalizacao: [{ id: 'loc-1', item: '', quantidade: '', endereco: '' }],
-                      materiaisServicos: [{
-                        id: 'mat-1',
-                        materialServico: '',
-                        descricaoSucinta: '',
-                        modeloMarcaReferencia: '',
-                        naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
-                        quantidade: 1,
-                        valorUnitario: 0,
-                        valorTotal: 0,
-                      }],
-                      pesquisaPrecosObservacoes: '',
-                      implementacao: '',
-                      anexos: '',
-                    });
-                  }
-                }}
-                className="px-3 py-1.5 text-xs font-semibold rounded-lg text-slate-600 hover:text-red-700 hover:bg-red-50 border border-slate-200 transition-colors cursor-pointer"
+                onClick={() => setShowClearModal(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg text-slate-700 hover:text-red-700 hover:bg-red-50 border border-slate-300 transition-colors cursor-pointer"
+                title="Limpar todos os campos e deixar o formulário em branco"
               >
-                Limpar Formulário
+                <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                <span>Limpar Formulário</span>
               </button>
 
               <button
@@ -208,6 +196,23 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
               </button>
             </div>
           </div>
+
+          {/* Banner de Confirmação quando o formulário é limpo */}
+          {showClearSuccess && (
+            <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-semibold flex items-center justify-between shadow-xs">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>Formulário limpo com sucesso! Todos os campos estão em branco e prontos para novo preenchimento.</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowClearSuccess(false)}
+                className="text-emerald-700 hover:text-emerald-900 p-1 text-xs cursor-pointer font-bold"
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
           {/* Contextual AI Assistant Assistant Banner */}
           {(hasTitle || hasObjGeral || hasMateriais) && (
@@ -882,10 +887,49 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
             className="inline-flex items-center gap-2 px-5 py-2 text-xs font-bold rounded-xl bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-950/40 transition-all cursor-pointer hover:scale-102"
           >
             <FileText className="w-4 h-4" />
-            <span>Gerar / Enviar PDF</span>
+            <span>Visualizar PDF & Enviar para a AEPLAN</span>
           </button>
         </div>
       </div>
+
+      {/* Modal de Confirmação para Limpar Formulário */}
+      {showClearModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-3 rounded-xl bg-red-100 text-red-700">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Limpar Formulário?</h3>
+                <p className="text-xs text-slate-500">Deixar todos os campos em branco</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Tem certeza de que deseja apagar todos os dados digitados na proposta? O formulário será redefinido totalmente em branco (itens 1 ao 12, tabelas de localização e materiais).
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowClearModal(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmClear}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-lg shadow-sm cursor-pointer transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Sim, Limpar Tudo</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   FolderOpen,
   Plus,
@@ -12,6 +12,8 @@ import {
   HeartHandshake,
   Dumbbell,
   Check,
+  CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react';
 import { ProjectData } from '../types';
 import { downloadFppPdf } from '../services/pdfGenerator';
@@ -38,6 +40,8 @@ export const ProjectListModal: React.FC<ProjectListModalProps> = ({
   onImportProjects,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<{ text: string; isError?: boolean } | null>(null);
 
   if (!isOpen) return null;
 
@@ -61,13 +65,16 @@ export const ProjectListModal: React.FC<ProjectListModalProps> = ({
         const parsed = JSON.parse(event.target?.result as string);
         if (Array.isArray(parsed)) {
           onImportProjects(parsed);
-          alert(`${parsed.length} propostas importadas com sucesso!`);
+          setStatusMessage({ text: `${parsed.length} propostas importadas com sucesso!` });
+          setTimeout(() => setStatusMessage(null), 3000);
         } else if (parsed && parsed.id) {
           onImportProjects([parsed]);
-          alert('Proposta importada com sucesso!');
+          setStatusMessage({ text: 'Proposta importada com sucesso!' });
+          setTimeout(() => setStatusMessage(null), 3000);
         }
       } catch (err) {
-        alert('Arquivo JSON inválido.');
+        setStatusMessage({ text: 'Arquivo JSON inválido.', isError: true });
+        setTimeout(() => setStatusMessage(null), 3000);
       }
     };
     reader.readAsText(file);
@@ -122,6 +129,23 @@ export const ProjectListModal: React.FC<ProjectListModalProps> = ({
         </div>
 
         <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+          {statusMessage && (
+            <div
+              className={`p-3 rounded-xl border text-xs font-semibold flex items-center gap-2 ${
+                statusMessage.isError
+                  ? 'bg-red-50 border-red-200 text-red-800'
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              }`}
+            >
+              {statusMessage.isError ? (
+                <AlertTriangle className="w-4 h-4 shrink-0 text-red-600" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+              )}
+              <span>{statusMessage.text}</span>
+            </div>
+          )}
+
           {projects.length === 0 ? (
             <div className="text-center py-8 text-slate-500 text-sm">
               Nenhuma proposta encontrada. Crie uma nova proposta pelo botão superior.
@@ -160,7 +184,7 @@ export const ProjectListModal: React.FC<ProjectListModalProps> = ({
                         </p>
                         {p.historicoEnvios && p.historicoEnvios.length > 0 && (
                           <div className="text-[11px] text-emerald-700 font-medium">
-                            ✓ Enviado ao Google Apps Script em {p.historicoEnvios[p.historicoEnvios.length - 1].data}
+                            ✓ Enviado para a AEPLAN em {p.historicoEnvios[p.historicoEnvios.length - 1].data}
                           </div>
                         )}
                       </div>
@@ -194,19 +218,39 @@ export const ProjectListModal: React.FC<ProjectListModalProps> = ({
                         >
                           <Copy className="w-4 h-4 text-blue-600" />
                         </button>
-                        <button
-                          type="button"
-                          disabled={projects.length <= 1}
-                          onClick={() => {
-                            if (confirm('Deseja realmente excluir esta proposta?')) {
-                              onDeleteProject(p.id);
-                            }
-                          }}
-                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg disabled:opacity-30 cursor-pointer"
-                          title="Excluir proposta"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+
+                        {deleteConfirmId === p.id ? (
+                          <div className="flex items-center gap-1 bg-red-50 border border-red-200 px-2 py-1 rounded-lg">
+                            <span className="text-[10px] font-bold text-red-700">Excluir?</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onDeleteProject(p.id);
+                                setDeleteConfirmId(null);
+                              }}
+                              className="text-[10px] font-bold bg-red-600 text-white px-2 py-0.5 rounded hover:bg-red-700 cursor-pointer"
+                            >
+                              Sim
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeleteConfirmId(null)}
+                              className="text-[10px] text-slate-500 hover:text-slate-800 px-1 cursor-pointer font-bold"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={projects.length <= 1}
+                            onClick={() => setDeleteConfirmId(p.id)}
+                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg disabled:opacity-30 cursor-pointer"
+                            title="Excluir proposta"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>

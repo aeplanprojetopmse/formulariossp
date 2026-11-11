@@ -6,7 +6,6 @@ import { ProjectForm } from './components/ProjectForm';
 import { AiAssistantModal } from './components/AiAssistantModal';
 import { PdfPreviewModal } from './components/PdfPreviewModal';
 import { ProjectListModal } from './components/ProjectListModal';
-import { GitInstructionsModal } from './components/GitInstructionsModal';
 import { SettingsModal } from './components/SettingsModal';
 
 const STORAGE_KEY = 'SSP_SE_FPP_PROJECTS_V2_BLANK';
@@ -43,7 +42,6 @@ export default function App() {
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
   const [isListModalOpen, setIsListModalOpen] = useState(false);
-  const [isGitGuideOpen, setIsGitGuideOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Sync to localStorage
@@ -146,7 +144,6 @@ export default function App() {
         onNewProject={handleNewProject}
         onOpenAiAssistant={() => setIsAiModalOpen(true)}
         onOpenPdfPreview={() => setIsPdfModalOpen(true)}
-        onOpenGitGuide={() => setIsGitGuideOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenProjectList={() => setIsListModalOpen(true)}
       />
@@ -185,11 +182,6 @@ export default function App() {
         onDeleteProject={handleDeleteProject}
         onDuplicateProject={handleDuplicateProject}
         onImportProjects={handleImportProjects}
-      />
-
-      <GitInstructionsModal
-        isOpen={isGitGuideOpen}
-        onClose={() => setIsGitGuideOpen(false)}
       />
 
       <SettingsModal

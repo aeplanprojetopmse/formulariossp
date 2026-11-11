@@ -41,7 +41,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             <div>
               <h3 className="text-base font-bold">Configurações de Integração</h3>
               <p className="text-xs text-slate-400">
-                Chave da API Gemini e Endpoint do Google Apps Script
+                Chave da API Gemini e Endpoint de Envio para a AEPLAN
               </p>
             </div>
           </div>
@@ -74,7 +74,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
           <div>
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 flex items-center gap-1.5">
               <Globe className="w-3.5 h-3.5 text-blue-600" />
-              URL do Web App do Google Apps Script:
+              URL do Endpoint de Envio para a AEPLAN (Google Apps Script):
             </label>
             <input
               type="text"
@@ -84,7 +84,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
             />
             <p className="text-[11px] text-slate-500 mt-1">
-              O PDF gerado é enviado via POST em formato <code>{`{ "fileName": "...", "base64Data": "..." }`}</code>.
+              O PDF gerado é enviado diretamente para a AEPLAN via POST em formato <code>{`{ "fileName": "...", "base64Data": "..." }`}</code>.
             </p>
           </div>
 

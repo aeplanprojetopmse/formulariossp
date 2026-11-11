@@ -65,15 +65,15 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
     downloadFppPdf(project);
   };
 
-  const handleSendToAppsScript = async () => {
+  const handleSendToAeplan = async () => {
     setIsSending(true);
     setSendResult({ status: 'idle', message: '' });
 
     try {
       const response = await sendPdfToAppsScript(fileName, base64);
       setSendResult({
-        status: response.status === 'success' ? 'success' : 'success', // Treat Apps Script acknowledgement as success
-        message: response.message || 'Arquivo salvo com sucesso!',
+        status: response.status === 'success' ? 'success' : 'success',
+        message: response.message || 'Proposta enviada para a AEPLAN com sucesso!',
         fileId: response.fileId,
         fileUrl: response.fileUrl,
       });
@@ -86,7 +86,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
           data: new Date().toLocaleString('pt-BR'),
           fileName,
           status: 'sucesso' as const,
-          message: response.message || 'Arquivo salvo com sucesso!',
+          message: response.message || 'Proposta enviada para a AEPLAN com sucesso!',
           fileId: response.fileId,
           fileUrl: response.fileUrl,
         },
@@ -99,7 +99,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
     } catch (err: any) {
       setSendResult({
         status: 'error',
-        message: err.message || 'Erro ao enviar para o Google Apps Script.',
+        message: err.message || 'Erro ao enviar proposta para a AEPLAN.',
       });
     } finally {
       setIsSending(false);
@@ -155,18 +155,18 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
             <button
               type="button"
               disabled={isSending || !base64}
-              onClick={handleSendToAppsScript}
+              onClick={handleSendToAeplan}
               className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white shadow-md transition-all cursor-pointer"
             >
               {isSending ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-white" />
-                  <span>Enviando ao Apps Script...</span>
+                  <span>Enviando para a AEPLAN...</span>
                 </>
               ) : (
                 <>
                   <Send className="w-4 h-4 text-white" />
-                  <span>Enviar ao Apps Script</span>
+                  <span>Enviar para a AEPLAN</span>
                 </>
               )}
             </button>
@@ -249,7 +249,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
         <div className="bg-white border-t border-slate-200 px-6 py-2.5 flex items-center justify-between text-xs text-slate-500 shrink-0">
           <div className="flex items-center gap-3">
             <span>
-              Destino Apps Script:{' '}
+              Destino (AEPLAN):{' '}
               <span className="font-mono text-[11px] text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded">
                 ...{getStoredScriptUrl().slice(-30)}
               </span>
@@ -276,7 +276,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
           <div className="p-4 bg-slate-900 border-t border-slate-800 text-slate-300 font-mono text-[11px] shrink-0">
             <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
               <span className="text-slate-400 font-sans font-semibold">
-                Formato enviado para o Google Apps Script:
+                Formato de envio para a AEPLAN:
               </span>
               <button
                 type="button"
