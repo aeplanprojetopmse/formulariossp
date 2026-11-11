@@ -218,11 +218,19 @@ export function generateFppPdf(project: ProjectData): PdfGenerationResult {
   doc.text(legalLines, marginLeft, currentY);
   currentY += legalLines.length * 3.5 + 4;
 
+  const formatNaturezaDespesa = (nat?: string) => {
+    if (!nat) return '4.4.90';
+    if (nat.includes('3.3.90') || nat.includes('33.90') || nat.toLowerCase().includes('custeio')) {
+      return '3.3.90';
+    }
+    return '4.4.90';
+  };
+
   const materiaisRows = (project.materiaisServicos || []).map((m) => [
     m.materialServico || '-',
     m.descricaoSucinta || '-',
     m.modeloMarcaReferencia || '-',
-    m.naturezaDespesa || '-',
+    formatNaturezaDespesa(m.naturezaDespesa),
     String(m.quantidade || '0'),
     formatCurrencyBRL(m.valorTotal || (m.quantidade * (m.valorUnitario || 0))),
   ]);
@@ -293,10 +301,6 @@ export function generateFppPdf(project: ProjectData): PdfGenerationResult {
   // XI. IMPLEMENTAÇÃO
   renderSectionHeader('XI', 'IMPLEMENTAÇÃO');
   renderSectionParagraph(project.implementacao);
-
-  // XII. ANEXOS
-  renderSectionHeader('XII', 'ANEXOS');
-  renderSectionParagraph(project.anexos);
 
   // Signature Block
   checkPageBreak(30);

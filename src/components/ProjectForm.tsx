@@ -92,7 +92,7 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
       materialServico: '',
       descricaoSucinta: '',
       modeloMarcaReferencia: '',
-      naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+      naturezaDespesa: '4.4.90',
       quantidade: 1,
       valorUnitario: 0,
       valorTotal: 0,
@@ -733,13 +733,20 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
                     />
                   </td>
                   <td className="p-2">
-                    <input
-                      type="text"
-                      value={m.naturezaDespesa}
+                    <select
+                      value={
+                        m.naturezaDespesa === '3.3.90' ||
+                        m.naturezaDespesa?.includes('3.3.90') ||
+                        m.naturezaDespesa?.toLowerCase().includes('custeio')
+                          ? '3.3.90'
+                          : '4.4.90'
+                      }
                       onChange={(e) => updateMaterialRow(m.id, 'naturezaDespesa', e.target.value)}
-                      placeholder="44.90.52"
-                      className="w-full px-2 py-1 text-xs border border-slate-200 rounded focus:border-blue-500 outline-none"
-                    />
+                      className="w-full px-2 py-1 text-xs border border-slate-200 rounded focus:border-blue-500 outline-none bg-white font-medium text-slate-800"
+                    >
+                      <option value="4.4.90">4.4.90 (Investimento)</option>
+                      <option value="3.3.90">3.3.90 (Custeio)</option>
+                    </select>
                   </td>
                   <td className="p-2">
                     <input
@@ -825,32 +832,6 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
           value={project.implementacao}
           onChange={(e) => updateField('implementacao', e.target.value)}
           placeholder="Descreva as etapas cronológicas pós-aquisição..."
-          className="w-full px-4 py-3 text-sm text-slate-800 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none leading-relaxed"
-        />
-      </div>
-
-      {/* SECTION XII - ANEXOS */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-8 space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-extrabold text-blue-950 uppercase tracking-wide">
-            XII ANEXOS
-          </h3>
-          <FieldAiButton
-            fieldKey="anexos"
-            fieldLabel="XII Anexos"
-            currentValue={project.anexos}
-            projectContext={project}
-            onApply={(val) => updateField('anexos', val)}
-          />
-        </div>
-        <p className="text-xs text-slate-500 leading-relaxed">
-          Relação de documentos anexados (relatório fotográfico, estudo técnico preliminar - ETP, cotações de preços, mapa de mancha criminal, etc.).
-        </p>
-        <textarea
-          rows={3}
-          value={project.anexos}
-          onChange={(e) => updateField('anexos', e.target.value)}
-          placeholder="Exemplo: 1. Estudo Técnico Preliminar (ETP nº 01/2025); 2. Mapa de mancha criminal; 3. Três cotações de preços..."
           className="w-full px-4 py-3 text-sm text-slate-800 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none leading-relaxed"
         />
       </div>

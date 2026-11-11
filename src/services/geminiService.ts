@@ -137,10 +137,9 @@ A resposta DEVE ser estritamente um objeto JSON válido (sem marcadores de códi
 - sustentabilidade (string com vida útil, manutenção, combustível e contratos)
 - mensuracaoResultados (string citando ferramentas como ROP/BO, estatísticas SSP e indicadores)
 - planoLocalizacao (array de objetos { item, quantidade, endereco em Sergipe })
-- materiaisServicos (array de objetos { materialServico, descricaoSucinta, modeloMarcaReferencia, naturezaDespesa, quantidade, valorUnitario, valorTotal })
+- materiaisServicos (array de objetos { materialServico, descricaoSucinta, modeloMarcaReferencia, naturezaDespesa ("4.4.90" para investimento ou "3.3.90" para custeio), quantidade, valorUnitario, valorTotal })
 - pesquisaPrecosObservacoes (string justificando parâmetros de preço conforme legislação)
-- implementacao (string detalhando etapas e cronograma pós-aquisição)
-- anexos (string listando documentos recomendados como ETP, cotações, etc.)`;
+- implementacao (string detalhando etapas e cronograma pós-aquisição)`;
 
   const prompt = `Gere uma proposta de projeto completa do FPP para a Secretaria de Estado da Segurança Pública de Sergipe com base na seguinte solicitação:
 Área Temática: ${areaDescMap[area]}
@@ -197,7 +196,10 @@ Lembre-se de usar termos e municípios reais de Sergipe (ex.: Aracaju, Nossa Sen
               materialServico: mat.materialServico || 'Material/Serviço',
               descricaoSucinta: mat.descricaoSucinta || '',
               modeloMarcaReferencia: mat.modeloMarcaReferencia || 'Referência de mercado',
-              naturezaDespesa: mat.naturezaDespesa || '44.90.52 - Equipamentos e Material Permanente',
+              naturezaDespesa:
+                mat.naturezaDespesa?.includes('3.3.90') || mat.naturezaDespesa?.toLowerCase().includes('custeio')
+                  ? '3.3.90'
+                  : '4.4.90',
               quantidade: qtd,
               valorUnitario: unit,
               valorTotal: total,
@@ -206,7 +208,6 @@ Lembre-se de usar termos e municípios reais de Sergipe (ex.: Aracaju, Nossa Sen
         : [],
       pesquisaPrecosObservacoes: parsed.pesquisaPrecosObservacoes || '',
       implementacao: parsed.implementacao || '',
-      anexos: parsed.anexos || '',
     };
   } catch (err) {
     console.error('Falha ao processar JSON da IA, acionando fallback:', err);
@@ -252,7 +253,7 @@ function generateOfflineProposal(
           materialServico: cleanIdea.slice(0, 40),
           descricaoSucinta: `Aquisição de ${cleanIdea} em conformidade com as especificações técnicas da SSP/SE.`,
           modeloMarcaReferencia: 'Padrão normatizado de referência',
-          naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+          naturezaDespesa: '4.4.90',
           quantidade: 1,
           valorUnitario: 150000.0,
           valorTotal: 150000.0,
@@ -260,7 +261,6 @@ function generateOfflineProposal(
       ],
       pesquisaPrecosObservacoes: 'Pesquisa elaborada com base no Painel de Preços oficial do Governo e três cotações de fornecedores especializados (Portaria SSP 1998/2025).',
       implementacao: 'Recebimento e tombamento patrimonial pela Diretoria de Apoio Logístico (DAL/PMSE), seguido de instrução de nivelamento técnico e imediata alocação nas escalas de serviço.',
-      anexos: '1. Estudo Técnico Preliminar (ETP);\n2. Mapa da mancha criminal da região;\n3. Mapa comparativo de cotações de preços de 3 fornecedores.',
     };
   }
 
@@ -290,7 +290,7 @@ function generateOfflineProposal(
           materialServico: cleanIdea.slice(0, 40),
           descricaoSucinta: `Itens de acolhimento e patrulhamento: ${cleanIdea}`,
           modeloMarcaReferencia: 'Especificação técnica para proteção à mulher',
-          naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+          naturezaDespesa: '4.4.90',
           quantidade: 1,
           valorUnitario: 95000.0,
           valorTotal: 95000.0,
@@ -298,7 +298,6 @@ function generateOfflineProposal(
       ],
       pesquisaPrecosObservacoes: 'Pesquisa realizada com base em atas públicas similares e três orçamentos comerciais não discrepantes.',
       implementacao: 'Instalação e distribuição dos itens em 30 dias, capacitação da guarnição em acolhimento especializado e articulação com a rede de proteção local.',
-      anexos: '1. Projeto básico de atendimento humanizado;\n2. Protocolo operacional da Patrulha Maria da Penha;\n3. Orçamentos mercadológicos.',
     };
   }
 
@@ -328,7 +327,7 @@ function generateOfflineProposal(
         materialServico: cleanIdea.slice(0, 40),
         descricaoSucinta: `Conjunto para qualidade de vida e saúde: ${cleanIdea}`,
         modeloMarcaReferencia: 'Linha profissional normatizada',
-        naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+        naturezaDespesa: '4.4.90',
         quantidade: 1,
         valorUnitario: 75000.0,
         valorTotal: 75000.0,
@@ -336,7 +335,6 @@ function generateOfflineProposal(
     ],
     pesquisaPrecosObservacoes: 'Pesquisa de preços balizada no Banco de Preços e cotações de empresas fornecedoras do setor.',
     implementacao: 'Montagem dos aparelhos e adequação do espaço em 20 dias, com publicação de Portaria com escala e regulamento de uso.',
-    anexos: '1. Laudo da saúde ocupacional indicando a necessidade;\n2. Mapa de cotações com 3 propostas comerciais;\n3. Desenho de distribuição do espaço.',
   };
 }
 
@@ -481,10 +479,6 @@ function generateOfflineFieldSuggestion(
     return draft
       ? `${draft}\n- Cronograma pós-aquisição executado pela comissão técnica designada.`
       : `1. Recebimento e inspeção técnica pela Comissão de Recebimento de Materiais da SSP/SE (15 dias);\n2. Tombamento e cadastramento patrimonial no sistema oficial do Estado (10 dias);\n3. Instrução de capacitação e entrega formal à ${lotacao} para início imediato do emprego operacional.`;
-  }
-
-  if (fieldKey === 'anexos') {
-    return `1. Estudo Técnico Preliminar (ETP);\n2. Termo de Referência simplificado;\n3. Três cotações de preços de fornecedores especializados (Portaria SSP 1998/2025);\n4. Mapa da mancha de atendimento da ${lotacao}.`;
   }
 
   return draft || `Proposta técnica elaborada para a ${lotacao} no âmbito do projeto "${title}".`;

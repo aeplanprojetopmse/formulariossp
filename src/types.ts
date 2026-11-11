@@ -79,8 +79,8 @@ export interface ProjectData {
   // XI. Implementação
   implementacao: string;
 
-  // XII. Anexos
-  anexos: string;
+  // XII. Anexos (opcional)
+  anexos?: string;
 
   // Opções de Formatação
   incluirPmbok?: boolean;

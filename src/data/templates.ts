@@ -37,7 +37,7 @@ export function createBlankProject(area: ThematicArea = 'MVI'): ProjectData {
         materialServico: '',
         descricaoSucinta: '',
         modeloMarcaReferencia: '',
-        naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+        naturezaDespesa: '4.4.90',
         quantidade: 1,
         valorUnitario: 0,
         valorTotal: 0,
@@ -45,7 +45,6 @@ export function createBlankProject(area: ThematicArea = 'MVI'): ProjectData {
     ],
     pesquisaPrecosObservacoes: '',
     implementacao: '',
-    anexos: '',
     incluirPmbok: false,
   };
 }
@@ -112,7 +111,7 @@ export const TEMPLATE_MVI: ProjectData = {
       materialServico: 'Viatura Policial Operacional 4x4',
       descricaoSucinta: 'Veículo tipo Pick-up cabine dupla, motor turbodiesel, tração 4x4, caracterizado padrão PMSE, com cela e giroflex em LED.',
       modeloMarcaReferencia: 'Toyota Hilux 4x4 / Ford Ranger ou equivalente',
-      naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+      naturezaDespesa: '4.4.90',
       quantidade: 4,
       valorUnitario: 260000.0,
       valorTotal: 1040000.0,
@@ -122,7 +121,7 @@ export const TEMPLATE_MVI: ProjectData = {
       materialServico: 'Pistola Semiautomática 9x19mm',
       descricaoSucinta: 'Pistola 9mm, acabamento anticorrosivo teniferizado, capacidade mínima 17 tiros, 3 carregadores e coldre tático de retenção.',
       modeloMarcaReferencia: 'Glock G17 Gen5 / Beretta APX / Taurus TS9',
-      naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+      naturezaDespesa: '4.4.90',
       quantidade: 20,
       valorUnitario: 4200.0,
       valorTotal: 84000.0,
@@ -133,9 +132,6 @@ export const TEMPLATE_MVI: ProjectData = {
 
   implementacao:
     '1. Recebimento e conferência técnica dos bens pela Comissão de Recebimento da PMSE;\n2. Registro patrimonial e tombamento junto à Diretoria de Apoio Logístico (DAL/PMSE);\n3. Realização de instrução de nivelamento tático e tiro policial de 40 horas-aula para os militares escalados;\n4. Distribuição imediata das viaturas e armamentos e alocação nas escalas de radiopatrulhamento diário.',
-
-  anexos:
-    '1. Estudo Técnico Preliminar (ETP nº 04/2025);\n2. Mapa da mancha criminal do Alto Sertão emitido pela CEACRIM/SSP;\n3. Termo de Referência simplificado e mapa comparativo de cotações de preços (3 fornecedores);\n4. Certidão de regularidade orçamentária do FNSP.',
 };
 
 export const TEMPLATE_EVM: ProjectData = {
@@ -200,7 +196,7 @@ export const TEMPLATE_EVM: ProjectData = {
       materialServico: 'Viatura SUV Caracterizada Maria da Penha',
       descricaoSucinta: 'Veículo tipo SUV, câmbio automático, plotagem institucional padrão Maria da Penha (Lilás/Branco), giroflex e rádio comunicador.',
       modeloMarcaReferencia: 'Renault Duster / Hyundai Creta ou similar',
-      naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+      naturezaDespesa: '4.4.90',
       quantidade: 1,
       valorUnitario: 185000.0,
       valorTotal: 185000.0,
@@ -210,7 +206,7 @@ export const TEMPLATE_EVM: ProjectData = {
       materialServico: 'Kit Mobiliário e Brinquedoteca Sala Lilás',
       descricaoSucinta: 'Conjunto de sofá ergonômico, mesas de atendimento, poltronas confortáveis, tapete antialérgico, mesa infantil e brinquedos lúdicos.',
       modeloMarcaReferencia: 'Mobiliário corporativo hospitalar/psicológico normatizado',
-      naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+      naturezaDespesa: '4.4.90',
       quantidade: 1,
       valorUnitario: 24500.0,
       valorTotal: 24500.0,
@@ -221,9 +217,6 @@ export const TEMPLATE_EVM: ProjectData = {
 
   implementacao:
     'Instalação e reforma básica do cômodo sede no 6º BPM em 30 dias; entrega da viatura plotada em 45 dias; capacitação de 20 policiais militares pelo DAGV/SSP e Tribunal de Justiça antes do lançamento das rondas preventivas.',
-
-  anexos:
-    '1. Projeto básico da Sala Lilás do 6º BPM;\n2. Termo de Cooperação Técnica com o Juizado de Violência Doméstica da Comarca de Estância;\n3. Orçamentos comerciais e ata de registro de preços de viaturas.',
 };
 
 export const TEMPLATE_MQV: ProjectData = {
@@ -288,7 +281,7 @@ export const TEMPLATE_MQV: ProjectData = {
       materialServico: 'Estação Multifuncional e Aparelhos de Musculação Profissional',
       descricaoSucinta: 'Kit composto por crossover, leg press 45º, puxador pulley, banco supino regulável e conjunto de halteres emborrachados de 2kg a 30kg.',
       modeloMarcaReferencia: 'Movement / Matrix / Konnen Fitness profissional',
-      naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+      naturezaDespesa: '4.4.90',
       quantidade: 1,
       valorUnitario: 89000.0,
       valorTotal: 89000.0,
@@ -298,7 +291,7 @@ export const TEMPLATE_MQV: ProjectData = {
       materialServico: 'Esteiras Ergométricas Profissionais',
       descricaoSucinta: 'Esteiras de alto tráfego com amortecimento e motor 3.0 HP AC para treinamento cardiorrespiratório.',
       modeloMarcaReferencia: 'Movement RT 250 / Lion Fitness',
-      naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+      naturezaDespesa: '4.4.90',
       quantidade: 2,
       valorUnitario: 14500.0,
       valorTotal: 29000.0,
@@ -308,7 +301,7 @@ export const TEMPLATE_MQV: ProjectData = {
       materialServico: 'Aparelhos de Ar Condicionado Split Inverter 18.000 BTUs',
       descricaoSucinta: 'Aparelhos de ar condicionado inverter econômicos classe A, com instalação e suporte inclusos.',
       modeloMarcaReferencia: 'Gree / Elgin / Springer Midea',
-      naturezaDespesa: '44.90.52 - Equipamentos e Material Permanente',
+      naturezaDespesa: '4.4.90',
       quantidade: 4,
       valorUnitario: 3400.0,
       valorTotal: 13600.0,
@@ -319,9 +312,6 @@ export const TEMPLATE_MQV: ProjectData = {
 
   implementacao:
     'Adequação do piso com manta emborrachada de alto impacto (15 dias); montagem técnica e laudo de entrega técnica dos equipamentos (10 dias); expedição de Portaria Interna regulamentando horários e normas de utilização.',
-
-  anexos:
-    '1. Laudo do Núcleo de Saúde Ocupacional da PMSE apontando a necessidade do programa;\n2. Três propostas comerciais detalhadas;\n3. Planta baixa simplificada da área da academia.',
 };
 
 export const TEMPLATES: Record<ThematicArea, ProjectData> = {
