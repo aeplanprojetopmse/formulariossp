@@ -15,9 +15,7 @@ const port = process.env.PORT || 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-const DEFAULT_API_KEY =
-  process.env.GEMINI_API_KEY ||
-  'AQ.Ab8RN6Il0g7MQH8IY05Q8A4M5icq9SPH_ishaNjBlTFAB4PoLw';
+const DEFAULT_API_KEY = process.env.GEMINI_API_KEY || '';
 
 function getGenAIClient(apiKey?: string) {
   const key = apiKey || DEFAULT_API_KEY;
@@ -43,13 +41,13 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
     let text = '';
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: 'gemini-1.5-flash',
         contents: prompt,
         config: systemInstruction ? { systemInstruction } : undefined,
       });
       text = response.text || '';
     } catch (primaryErr: any) {
-      console.warn('Tentativa com gemini-3.8-flash encontrou erro, tentando modelo alternativo...', primaryErr?.message);
+      console.warn('Tentativa com gemini-1.5-flash encontrou erro, tentando modelo alternativo...', primaryErr?.message);
       const fallbackResponse = await ai.models.generateContent({
         model: 'gemini-3.1-flash-lite',
         contents: prompt,

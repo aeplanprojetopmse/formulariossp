@@ -1,8 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { ProjectData, ThematicArea } from './types';
-import { TEMPLATES, TEMPLATE_MVI, TEMPLATE_EVM, TEMPLATE_MQV, createBlankProject } from './data/templates';
-import { Navbar } from './components/Navbar';
-import { ProjectForm } from './components/ProjectForm';
+import {
+  TEMPLATES,
+  TEMPLATE_MVI,
+  TEMPLATE_EVM,
+  TEMPLATE_MQV,
+  createBlankProject,
+  generateRandomProposalNumber,
+} from './data/templates';
+import { StepWizard } from './components/StepWizard';
 import { AiAssistantModal } from './components/AiAssistantModal';
 import { PdfPreviewModal } from './components/PdfPreviewModal';
 import { ProjectListModal } from './components/ProjectListModal';
@@ -70,7 +76,7 @@ export default function App() {
       newProject = {
         ...baseTemplate,
         id: `proj-${Date.now()}`,
-        numeroProposta: `FPP-${area}-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
+        numeroProposta: generateRandomProposalNumber(area),
         titulo: `${baseTemplate.titulo} (Exemplo)`,
         dataCriacao: new Date().toISOString(),
         dataAtualizacao: new Date().toISOString(),
@@ -136,25 +142,16 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col font-sans text-slate-800">
-      {/* Navigation Header */}
-      <Navbar
-        currentProject={currentProject}
-        thematicArea={currentProject.areaTematica}
-        onChangeArea={handleChangeArea}
-        onNewProject={handleNewProject}
-        onOpenAiAssistant={() => setIsAiModalOpen(true)}
-        onOpenPdfPreview={() => setIsPdfModalOpen(true)}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onOpenProjectList={() => setIsListModalOpen(true)}
-      />
-
       {/* Main Content Area */}
       <main className="flex-1 pb-16">
-        <ProjectForm
+        <StepWizard
           project={currentProject}
           onChange={handleUpdateProject}
           onOpenAiAssistant={() => setIsAiModalOpen(true)}
           onOpenPdfPreview={() => setIsPdfModalOpen(true)}
+          onOpenProjectList={() => setIsListModalOpen(true)}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          onNewBlankProject={(area) => handleNewProject(area, true)}
         />
       </main>
 

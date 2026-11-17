@@ -1,9 +1,15 @@
 import { ProjectData, ThematicArea } from '../types';
 
+export function generateRandomProposalNumber(area: ThematicArea = 'MVI'): string {
+  const randomNum = Math.floor(100 + Math.random() * 900);
+  const year = new Date().getFullYear();
+  return `FPP-${area}-${year}-${randomNum}`;
+}
+
 export function createBlankProject(area: ThematicArea = 'MVI'): ProjectData {
   return {
     id: `proj-${Date.now()}`,
-    numeroProposta: `FPP-${area}-${new Date().getFullYear()}-001`,
+    numeroProposta: generateRandomProposalNumber(area),
     titulo: '',
     areaTematica: area,
     dataCriacao: new Date().toISOString(),
