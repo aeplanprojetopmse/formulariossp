@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 
 dotenv.config();
 
@@ -18,10 +18,13 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 const DEFAULT_API_KEY = process.env.GEMINI_API_KEY || '';
 
 const MODEL_CASCADE = [
-  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-  { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite' },
+  { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite', useLowThinking: false },
+  { id: 'gemini-4-hydrogen', label: 'Gemini 4 Flash', useLowThinking: true },
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', useLowThinking: false },
 ] as const;
+
+const QUOTA_COOLDOWN_MS = 60_000;
+const modelCooldownUntil: Record<string, number> = {};
 
 function getGenAIClient(apiKey?: string) {
   const key = apiKey || DEFAULT_API_KEY;
@@ -45,22 +48,24 @@ function isAuthError(errMsg: string): boolean {
   );
 }
 
-function isQuotaOrModelUnavailable(errMsg: string, status?: number): boolean {
+function isQuotaError(errMsg: string, status?: number): boolean {
   const lower = errMsg.toLowerCase();
   return (
     status === 429 ||
-    status === 404 ||
     status === 503 ||
     lower.includes('resource_exhausted') ||
     lower.includes('429') ||
     lower.includes('quota') ||
     lower.includes('rate limit') ||
     lower.includes('too many requests') ||
-    lower.includes('not_found') ||
-    lower.includes('404') ||
     lower.includes('overloaded') ||
     lower.includes('unavailable')
   );
+}
+
+function isModelNotFoundError(errMsg: string, status?: number): boolean {
+  const lower = errMsg.toLowerCase();
+  return status === 404 || lower.includes('not_found') || lower.includes('404');
 }
 
 // Endpoint to generate content or suggestions with Gemini using free model cascade
@@ -81,13 +86,28 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
 
     const ai = getGenAIClient(effectiveKey);
     const quotaExhaustedModels: string[] = [];
+    const now = Date.now();
 
     for (const modelEntry of MODEL_CASCADE) {
+      const cooldownExpires = modelCooldownUntil[modelEntry.id] || 0;
+      if (cooldownExpires > now) {
+        quotaExhaustedModels.push(modelEntry.label);
+        continue;
+      }
+
       try {
+        const config: Record<string, any> = {};
+        if (systemInstruction) {
+          config.systemInstruction = systemInstruction;
+        }
+        if (modelEntry.useLowThinking) {
+          config.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+        }
+
         const response = await ai.models.generateContent({
           model: modelEntry.id,
           contents: prompt,
-          config: systemInstruction ? { systemInstruction } : undefined,
+          config: Object.keys(config).length > 0 ? config : undefined,
         });
 
         const text = response.text || '';
@@ -111,14 +131,19 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
           });
         }
 
-        if (isQuotaOrModelUnavailable(errMsg, status)) {
-          console.warn(`Modelo ${modelEntry.id} indisponível ou cota esgotada:`, errMsg);
+        if (isQuotaError(errMsg, status)) {
+          console.warn(`Cota esgotada ou indisponibilidade temporária em ${modelEntry.id}:`, errMsg);
+          modelCooldownUntil[modelEntry.id] = Date.now() + QUOTA_COOLDOWN_MS;
           quotaExhaustedModels.push(modelEntry.label);
           continue;
         }
 
+        if (isModelNotFoundError(errMsg, status)) {
+          console.warn(`Modelo ${modelEntry.id} não encontrado neste endpoint:`, errMsg);
+          continue;
+        }
+
         console.warn(`Erro inesperado no modelo ${modelEntry.id}:`, errMsg);
-        quotaExhaustedModels.push(modelEntry.label);
       }
     }
 

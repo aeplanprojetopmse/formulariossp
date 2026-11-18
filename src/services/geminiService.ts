@@ -3,10 +3,13 @@ import { ProjectData, ThematicArea } from '../types';
 export const DEFAULT_GEMINI_KEY = '';
 
 export const FREE_MODEL_CASCADE = [
-  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
   { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite' },
+  { id: 'gemini-4-hydrogen', label: 'Gemini 4 Flash' },
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
 ] as const;
+
+const CLIENT_QUOTA_COOLDOWN_MS = 60_000;
+const clientCooldownUntil: Record<string, number> = {};
 
 export interface AiModelNotice {
   id: string;
@@ -61,19 +64,24 @@ export function saveStoredApiKey(key: string): void {
   }
 }
 
-function isQuotaOrUnavailable(status: number, errorDetail: string): boolean {
+function isQuotaError(status: number, errorDetail: string): boolean {
   const lower = errorDetail.toLowerCase();
   return (
     status === 429 ||
-    status === 404 ||
     status === 503 ||
     lower.includes('resource_exhausted') ||
+    lower.includes('429') ||
     lower.includes('quota') ||
     lower.includes('rate limit') ||
     lower.includes('too many requests') ||
-    lower.includes('not_found') ||
+    lower.includes('overloaded') ||
     lower.includes('unavailable')
   );
+}
+
+function isModelNotFound(status: number, errorDetail: string): boolean {
+  const lower = errorDetail.toLowerCase();
+  return status === 404 || lower.includes('not_found') || lower.includes('404');
 }
 
 /**
@@ -104,8 +112,8 @@ export async function callGeminiWithCascade(
     const data = await res.json().catch(() => null);
 
     if (res.ok && data?.text) {
-      const modelId = data.modelUsed || 'gemini-3.8-flash';
-      const modelLabel = data.modelLabel || 'Gemini 3.8 Flash';
+      const modelId = data.modelUsed || 'gemini-3.1-flash-lite';
+      const modelLabel = data.modelLabel || 'Gemini 3.1 Flash Lite';
       const exhausted: string[] = Array.isArray(data.quotaExhaustedModels)
         ? data.quotaExhaustedModels
         : [];
@@ -166,7 +174,14 @@ export async function callGeminiWithCascade(
     throw new Error('NO_VALID_CLIENT_KEY');
   }
 
+  const now = Date.now();
+
   for (const modelEntry of FREE_MODEL_CASCADE) {
+    if ((clientCooldownUntil[modelEntry.id] || 0) > now) {
+      accumulatedQuotaModels.push(modelEntry.label);
+      continue;
+    }
+
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelEntry.id}:generateContent?key=${encodeURIComponent(
       activeKey
     )}`;
@@ -178,6 +193,12 @@ export async function callGeminiWithCascade(
     if (systemInstruction) {
       bodyPayload.systemInstruction = {
         parts: [{ text: systemInstruction }],
+      };
+    }
+
+    if (modelEntry.id === 'gemini-4-hydrogen') {
+      bodyPayload.generationConfig = {
+        thinkingConfig: { thinkingLevel: 'LOW' },
       };
     }
 
@@ -227,8 +248,13 @@ export async function callGeminiWithCascade(
         // ignore parse failure
       }
 
-      if (isQuotaOrUnavailable(response.status, errorDetail)) {
+      if (isQuotaError(response.status, errorDetail)) {
+        clientCooldownUntil[modelEntry.id] = Date.now() + CLIENT_QUOTA_COOLDOWN_MS;
         accumulatedQuotaModels.push(modelEntry.label);
+        continue;
+      }
+
+      if (isModelNotFound(response.status, errorDetail)) {
         continue;
       }
 
@@ -237,6 +263,7 @@ export async function callGeminiWithCascade(
       if (fetchErr?.message?.startsWith('Erro na API')) {
         throw fetchErr;
       }
+      clientCooldownUntil[modelEntry.id] = Date.now() + CLIENT_QUOTA_COOLDOWN_MS;
       accumulatedQuotaModels.push(modelEntry.label);
     }
   }
@@ -342,6 +369,43 @@ function buildComprehensiveProjectContext(projectContext: Partial<ProjectData>, 
   return contextParts.join('\n\n');
 }
 
+function detectProjectDomainSummary(ctx: Partial<ProjectData>): string {
+  const matText = (ctx.materiaisServicos || [])
+    .map((m) => `${m.materialServico || ''} ${m.descricaoSucinta || ''}`)
+    .join(' ');
+  const raw = `${ctx.titulo || ''} ${ctx.lotacao || ''} ${ctx.objetivoGeral || ''} ${matText}`.toLowerCase();
+
+  const tags: string[] = [];
+  if (/hospital|hpm|médic|clínic|ambulatór|enferm|leito|odont|fisioter/.test(raw)) {
+    tags.push('Saúde / Assistência Médico-Hospitalar (HPM/PMSE)');
+  }
+  if (/reforma|obra|constru|predial|instalaç|telhad|piso|alvenar|engenharia|manutenção predial/.test(raw)) {
+    tags.push('Obra / Reforma Predial e Infraestrutura (referência SINAPI/ORSE-SE e acessibilidade NBR 9050)');
+  }
+  if (/tiro|estande|alvos|muniç|instruç|balístic|treinamento/.test(raw)) {
+    tags.push('Capacitação Técnica / Estande de Tiro e Adestramento Policial');
+  }
+  if (/viatura|pick-up|4x4|veículo|moto|motocicleta|furgão|patrulha/.test(raw)) {
+    tags.push('Mobilidade Operacional / Frota e Radiopatrulhamento');
+  }
+  if (/arma|pistola|fuzil|carabina|espingarda|colete|capacete|escudo|taser|incapacitante/.test(raw)) {
+    tags.push('Reaparelhamento Bélico e Equipamento de Proteção Individual (EPI)');
+  }
+  if (/câmera|videomonitor|dvr|rádio|comunicaç|tablet|software|ti\b|informática|inteligência|drone/.test(raw)) {
+    tags.push('Tecnologia, Inteligência Policial e Telecomunicações (CIOSP/SSP)');
+  }
+  if (ctx.areaTematica === 'EVM' || /mulher|penha|lilás|doméstica|feminic/.test(raw)) {
+    tags.push('Enfrentamento à Violência contra a Mulher (Lei Maria da Penha / Patrulha Maria da Penha / Sala Lilás)');
+  }
+  if (ctx.areaTematica === 'MQV' || /academia|musculaç|ergonom|clima|ar-condicionado|psicossocial|bem-estar|alojamento/.test(raw)) {
+    tags.push('Saúde Ocupacional, Salubridade e Valorização Profissional (MQV)');
+  }
+
+  return tags.length > 0
+    ? tags.join(' + ')
+    : 'Segurança Pública e Fortalecimento Institucional da SSP/SE';
+}
+
 /**
  * Generates an entire proposal draft from a brief idea
  */
@@ -356,21 +420,26 @@ export async function generateFullProposal(
     MQV: 'MQV - Melhoria da Qualidade de Vida e Valorização dos Profissionais de Segurança Pública (Saúde física, mental, infraestrutura e salubridade)',
   };
 
-  const systemInstruction = `Você é um Oficial Superior Especialista em Planejamento Estratégico, Orçamento Público e Captação de Recursos da Secretaria de Estado da Segurança Pública de Sergipe (SSP/SE).
-Sua missão é redigir o preenchimento técnico completo, coerente e de nível executivo do FORMULÁRIO DE PROPOSTA DE PROJETO (FPP), conforme a Portaria SSP nº 1998/2025, Lei nº 13.756/2018 (FNSP) e Lei nº 14.133/2021.
+  const systemInstruction = `Você é um Coronel Especialista Sênior em Planejamento Estratégico, Elaboração de Projetos Públicos, Orçamentação (Lei nº 14.133/2021) e Captação de Recursos da Secretaria de Estado da Segurança Pública de Sergipe (SSP/SE).
+Sua missão é redigir o preenchimento técnico completo, minucioso, coerente e pronto para aprovação pela AEPLAN no FORMULÁRIO DE PROPOSTA DE PROJETO (FPP), conforme a Portaria SSP nº 1998/2025, Lei nº 13.756/2018 (FNSP) e MCASP.
 
-REGRAS DE COERÊNCIA E QUALIDADE:
-- Todas as seções devem derivar estritamente do objeto pedido na "Ideia Central", mantendo coerência entre título, objetivo, justificativa, público, metas, localização e itens orçamentários.
-- Nunca use frases genéricas desconexas (ex.: não cite "tempo de resposta de patrulha" se o projeto for reforma predial, hospitalar ou treinamento).
-- A resposta DEVE ser estritamente um objeto JSON válido (sem texto fora do JSON) contendo:
+PADRÃO DE EXCELÊNCIA E COERÊNCIA:
+- Todas as seções devem derivar estritamente do objeto especificado na "Ideia Central", com total consistência terminológica e quantitativa entre título, objetivos, justificativa, público-alvo, metas SMART, indicadores, localização e itens orçamentários.
+- É PROIBIDO usar clichês desconexos do objeto real (não mencione "tempo de resposta de viatura" se o projeto for reforma, hospital, academia ou estande de tiro).
+- Redija textos densos, claros, objetivos e formais em Português do Brasil (padrão oficial da administração pública sergipana).
+- A resposta DEVE ser estritamente um objeto JSON válido (sem markdown extra nem texto fora do JSON) contendo as chaves:
   titulo, objetivoGeral, objetivosEspecificos, justificativa, publicoAlvoDireto, publicoAlvoIndireto, resultadosEsperados, metas, sustentabilidade, mensuracaoResultados, planoLocalizacao ([{ item, quantidade, endereco }]), materiaisServicos ([{ materialServico, descricaoSucinta, modeloMarcaReferencia, naturezaDespesa ("4.4.90" para investimento ou "3.3.90" para custeio), quantidade, valorUnitario, valorTotal }]), pesquisaPrecosObservacoes, implementacao.`;
 
-  const prompt = `Gere uma proposta de projeto completa e altamente detalhada para o FPP da SSP/SE com base em:
-Área Temática: ${areaDescMap[area]}
-Instituição: ${instituicao}
-Ideia Central da Solicitação: "${ideia}"
+  const prompt = `Elabore uma proposta de projeto completa, detalhada e tecnicamente impecável para o FPP da SSP/SE com base nos parâmetros abaixo:
+- Área Temática: ${areaDescMap[area]}
+- Instituição Proponente: ${instituicao}
+- Ideia Central / Objeto Solicitado: "${ideia}"
 
-Utilize referências reais de Sergipe (ex.: Aracaju, Nossa Senhora do Socorro, Itabaiana, Lagarto, Estância, Tobias Barreto, Canindé de São Francisco, HPM/SE, CEACRIM, CIOSP, DAL/PMSE) e valores realistas em Reais.`;
+Diretrizes de preenchimento:
+1. Em "justificativa", estruture 3 parágrafos robustos: diagnóstico situacional da unidade em Sergipe, pertinência técnica da solução e impacto institucional/social com base legal.
+2. Em "metas", apresente de 3 a 4 metas numeradas no padrão SMART (percentuais e prazos claros em dias/meses).
+3. Em "materiaisServicos", classifique corretamente 4.4.90 (material permanente/equipamento/obra de capital) e 3.3.90 (serviços/insumos de custeio) com valores unitários e totais realistas em Reais (R$) e coerentes com a soma.
+4. Em "planoLocalizacao", use unidades e municípios reais de Sergipe (ex.: Aracaju, Nossa Senhora do Socorro, Itabaiana, Lagarto, Estância, Tobias Barreto, Canindé de São Francisco, HPM/SE, CEACRIM, CIOSP, DAL/PMSE).`;
 
   let rawText = '';
   try {
@@ -576,56 +645,66 @@ export async function suggestFieldImprovement(
   projectContext: Partial<ProjectData>
 ): Promise<AiGenerationResult> {
   const fullContext = buildComprehensiveProjectContext(projectContext, fieldKey);
+  const domainSummary = detectProjectDomainSummary(projectContext);
 
   const fieldSpecificGuidance: Record<string, string> = {
     titulo:
-      'Redija um título institucional claro, preciso e autoexplicativo (1 frase), identificando o objeto principal, a unidade beneficiada (se informada) e o propósito central.',
+      'Redija um título técnico-institucional completo padrão AEPLAN/SSP-SE (1 única frase objetiva, sem ponto final nem aspas), explicitando: (1) a ação principal (ex.: Aquisição, Reforma e Modernização, Implantação), (2) o objeto central específico, (3) a unidade/lotação beneficiada (se informada) e (4) a finalidade estratégica alinhada à área temática.',
     objetivoGeral:
-      'Redija 1 parágrafo robusto iniciando com verbo no infinitivo, conectando exatamente o objeto do projeto (ex.: reforma predial, hospital, estande, viaturas, equipamentos) ao benefício final e ao alinhamento legal (Portaria SSP nº 1998/2025 e Lei nº 13.756/2018 quando aplicável).',
+      'Redija 1 parágrafo robusto e bem articulado (4 a 6 linhas), iniciando obrigatoriamente com verbo no infinitivo, conectando de modo preciso: o objeto exato da proposta, a unidade/região beneficiada em Sergipe, o problema estrutural ou operacional a superar e o alinhamento normativo à Portaria SSP nº 1998/2025 (e Lei nº 13.756/2018 quando aplicável).',
     objetivosEspecificos:
-      'Elabore uma lista numerada de 3 a 5 objetivos específicos concretos, verificáveis e estritamente coerentes com o título, materiais e natureza do objeto.',
+      'Elabore uma lista numerada de 4 a 5 objetivos específicos concretos (1., 2., 3., 4...), cada um iniciado por verbo no infinitivo, descrevendo entregas tangíveis, capacitação/adequação vinculada e impacto verificável, estritamente coerentes com os itens e a lotação informados.',
     justificativa:
-      'Redija de 2 a 3 parágrafos técnicos estruturados em: (1) diagnóstico do problema atual ou carência estrutural/operacional na unidade de Sergipe; (2) como o objeto e os itens propostos resolvem esse gargalo; e (3) impacto institucional e social esperado.',
+      'Redija uma justificativa técnica densa e convincente em 3 parágrafos encadeados:\n- Parágrafo 1 (Diagnóstico Situacional): descreva com precisão a carência atual ou vulnerabilidade enfrentada pela unidade proponente em Sergipe e os prejuízos operacionais/assistenciais decorrentes;\n- Parágrafo 2 (Pertinência Técnica da Solução): demonstre como os itens, serviços ou intervenções orçadas atacam diretamente a causa do problema, citando ganhos concretos de capacidade, segurança, salubridade ou eficiência;\n- Parágrafo 3 (Interesse Público e Fundamentação Legal): conecte o investimento aos objetivos estratégicos da SSP/SE, Portaria SSP nº 1998/2025 e legislação pertinente ao domínio (Lei nº 13.675/2018, Lei nº 13.756/2018, Lei nº 11.340/2006 ou normas técnicas/sanitárias aplicáveis).',
     publicoAlvoDireto:
-      'Especifique com clareza os beneficiários imediatos (servidores, policiais, profissionais de saúde ou usuários diretos da unidade), com estimativa numérica coerente.',
+      'Especifique com clareza quem são os beneficiários imediatos que utilizarão ou serão atendidos diretamente pelo objeto (efetivo policial, equipe técnica/médica ou cidadãos acolhidos), apresentando estimativa numérica coerente com o porte da unidade e o impacto direto na rotina.',
     publicoAlvoIndireto:
-      'Especifique os beneficiários mediatos (população do município/região em Sergipe, dependentes de servidores ou comunidade atendida), com estimativa numérica realista.',
+      'Especifique os beneficiários mediatos (população do município ou região de cobertura em Sergipe, dependentes de servidores e sociedade em geral), apresentando estimativa quantitativa realista e explicando o ganho social indireto.',
     resultadosEsperados:
-      'Liste de 3 a 4 resultados e impactos concretos em tópicos ("- ..."), usando indicadores reais ligados ao domínio do projeto.',
+      'Liste de 4 a 5 resultados esperados e impactos concretos em tópicos ("- ..."), combinando efeitos imediatos e de médio prazo mensuráveis, 100% aderentes ao domínio real do projeto (sem métricas de outro setor).',
     metas:
-      'Redija 3 metas numeradas no padrão SMART (específicas, mensuráveis, com percentuais e prazos em dias/meses compatíveis com os itens do projeto).',
+      'Redija de 3 a 4 metas numeradas rigorosamente no padrão SMART (Específica, Mensurável com percentuais/quantidades exatas, Atingível, Relevante e Temporal com prazos em dias ou meses após contratação/recebimento), alinhadas aos itens orçados e à capacidade da unidade.',
     sustentabilidade:
-      'Explique como o projeto se mantém após a entrega: garantia técnica, contratos corporativos de manutenção da SSP/SE ou PMSE, vida útil estimada segundo o MCASP e custeio continuado.',
+      'Redija 1 a 2 parágrafos técnicos detalhando os 4 pilares da continuidade pós-implantação: (1) garantia contratual e assistência técnica do fornecedor/executor; (2) absorção de manutenção preventiva, corretiva e insumos pela dotação continuada e contratos corporativos da SSP/SE ou PMSE; (3) vida útil estimada e registro patrimonial conforme o MCASP; e (4) ausência de custos imprevistos que comprometam o funcionamento.',
     mensuracaoResultados:
-      'Indique instrumentos objetivos de verificação compatíveis com o objeto (ex.: relatórios da CEACRIM/SSP, ROPs, prontuários/indicadores assistenciais do HPM, laudos de engenharia/entrega, pesquisas ou registros de frequência).',
+      'Descreva de forma objetiva 3 a 4 instrumentos auditáveis de verificação compatíveis com o objeto (ex.: relatórios da CEACRIM/SSP, ROPs e CIOSP; ou prontuários/indicadores assistenciais do HPM; ou laudos de medição de engenharia e vistorias; ou atas de frequência e aproveitamento), definindo periodicidade (mensal/trimestral/semestral) e comparação antes x depois.',
     pesquisaPrecosObservacoes:
-      'Fundamente a formação dos preços conforme o Art. 5º da Portaria SSP nº 1998/2025 e Lei nº 14.133/2021 (Painel de Preços, atas de SRP vigentes, SINAPI para obras/reformas quando aplicável e no mínimo 3 cotações válidas).',
+      'Fundamente metodológica e juridicamente a estimativa orçamentária com base no Art. 23 da Lei nº 14.133/2021 e no Art. 5º da Portaria SSP nº 1998/2025, indicando fontes oficiais (Painel de Preços/Compras.gov.br, Atas de Registro de Preços vigentes, SINAPI/ORSE-SE quando houver obra/reforma, além de no mínimo 3 cotações válidas de fornecedores e análise de vantajosidade/exequibilidade).',
     implementacao:
-      'Apresente um cronograma lógico numerado por etapas após a aprovação/liberação dos recursos, com prazos em dias (contratação/recebimento, inspeção/obra, tombamento na DAL/PMSE, capacitação e entrega operacional).',
+      'Apresente um cronograma executivo numerado em 4 a 5 etapas sequenciais após a aprovação/liberação dos recursos, indicando duração estimada em dias (ex.: 15 dias, 30 dias, 60 dias) e responsáveis: formalização/contratação, entrega ou execução técnica com fiscalização por comissão designada, tombamento patrimonial junto à DAL/PMSE (quando bem permanente), capacitação de nivelamento e entrada em operação plena.',
   };
 
-  const systemPrompt = `Você é um Coronel Especialista em Planejamento Estratégico, Elaboração de Projetos Públicos e Captação de Recursos da Secretaria de Estado da Segurança Pública de Sergipe (SSP/SE).
-Sua função é redigir o conteúdo técnico oficial para o campo "${fieldLabel}" do FORMULÁRIO DE PROPOSTA DE PROJETO (FPP), segundo a Portaria SSP nº 1998/2025.
+  const systemPrompt = `Você é um Coronel Especialista Sênior em Planejamento Estratégico, Elaboração de Projetos Públicos e Orçamentação (Lei nº 14.133/2021) da Secretaria de Estado da Segurança Pública de Sergipe (SSP/SE).
+Sua tarefa é redigir com máxima excelência técnica o campo "${fieldLabel}" do FORMULÁRIO DE PROPOSTA DE PROJETO (FPP), em total conformidade com a Portaria SSP nº 1998/2025.
 
-PRINCÍPIOS INEGOCIÁVEIS DE QUALIDADE:
-1. FIDELIDADE TOTAL À INTENÇÃO DO PROJETO: Leia todo o contexto preenchido abaixo (Título, Lotação, Materiais/Serviços, Objetivos e Justificativa já escritos). Tudo o que você redigir deve derivar diretamente desse objeto real.
-   - Projeto de reforma, obra ou hospital/HPM: trate de engenharia, infraestrutura predial, adequação às normas sanitárias/acessibilidade, ampliação da capacidade de atendimento e salubridade.
-   - Projeto de estande de tiro, armamento ou instrução: trate de capacitação técnica, segurança no uso progressivo da força, precisão e redução de incidentes.
-   - Projeto de viaturas, motos ou rádio: trate de mobilidade tática, cobertura territorial, saturação de manchas criminais e pronta resposta.
-   - Projeto de saúde ocupacional, academia ou climatização: trate de ergonomia, bem-estar, prevenção de afastamentos e longevidade funcional.
-   - PROIBIDO misturar domínios ou inserir clichês incompatíveis com o objeto.
-2. RIGOR TÉCNICO, LEGAL E QUANTITATIVO: Integre naturalmente, quando fizer sentido para o campo, métricas objetivas, prazos realistas, vocabulário administrativo-militar formal e fundamentação normativa da SSP/SE e Lei nº 14.133/2021.
-3. COERÊNCIA COM DADOS EXISTENTES: Se o usuário já iniciou um rascunho neste campo, preserve e eleve a ideia dele para nível executivo; se estiver vazio, crie uma redação original completa.
-4. SAÍDA LIMPA: Retorne exclusivamente o texto pronto para ser inserido no formulário oficial, sem saudações, explicações ou markdown desnecessário.`;
+DIRETRIZES DE EXCELÊNCIA (SIGA RIGOROSAMENTE):
+1. ANCORAGEM NO CONTEXTO REAL DO PROJETO:
+   - Domínio identificado automaticamente: ${domainSummary}.
+   - Leia atentamente o Título, a Lotação, os Materiais/Serviços, a Localização e os campos já preenchidos abaixo. Cada frase gerada precisa refletir especificamente esse projeto (não escreva texto genérico de catálogo).
+   - Se for reforma/obra/HPM: foque em infraestrutura física, normas sanitárias (ANVISA), acessibilidade (ABNT NBR 9050), segurança elétrica/hidráulica e capacidade assistencial.
+   - Se for estande/armamento/instrução: foque em proficiência técnica, segurança balística, controle emocional e uso diferenciado da força.
+   - Se for viatura/radiopatrulhamento: foque em mobilidade tática, cobertura territorial, manchas criminais e pronta resposta.
+   - Se for saúde ocupacional/academia/climatização: foque em ergonomia, salubridade, prevenção de absenteísmo e valorização humana.
+   - É PROIBIDO misturar temas incompatíveis entre si.
+2. PROFUNDIDADE, CLAREZA E FORMALIDADE:
+   - Use Português formal da administração pública brasileira, com termos precisos, argumentos sólidos, indicadores plausíveis e coesão textual.
+   - Evite adjetivos vazios ("muito importante", "de extrema relevância") sem explicação técnica concreta do porquê e do como.
+3. RESPEITO AO RASCUNHO DO USUÁRIO:
+   - Se o usuário já digitou algo no campo, preserve a intenção central dele e eleve o texto para nível executivo pronto para aprovação na AEPLAN.
+   - Se o campo estiver vazio, construa a redação completa do zero usando o contexto das demais abas.
+4. FORMATO DE SAÍDA LIMPO:
+   - Retorne APENAS o texto final pronto para colar no campo do formulário. Não inclua títulos repetitivos ("III. Justificativa:"), saudações, comentários introdutórios nem formatação markdown com asteriscos (**).`;
 
   const prompt = `CONTEXTO INTEGRAL DA PROPOSTA EM ELABORAÇÃO:
 ${fullContext || 'Área Temática Selecionada: ' + (projectContext.areaTematica || 'MVI')}
 
+DOMÍNIO TÉCNICO IDENTIFICADO: ${domainSummary}
 CAMPO A REDIGIR AGORA: ${fieldLabel}
-ORIENTAÇÃO ESPECÍFICA DO CAMPO: ${fieldSpecificGuidance[fieldKey] || 'Redija texto técnico formal, claro e coerente com os demais dados.'}
+CRITÉRIOS DE QUALIDADE PARA ESTE CAMPO:
+${fieldSpecificGuidance[fieldKey] || 'Redija texto técnico formal, completo, detalhado e estritamente coerente com os demais dados.'}
 
 RASCUNHO ATUAL DIGITADO PELO USUÁRIO:
-"${currentValue && currentValue.trim() ? currentValue.trim() : '(Campo vazio — elabore redação técnica completa e alinhada ao contexto acima)'}"`;
+"${currentValue && currentValue.trim() ? currentValue.trim() : '(Campo vazio — elabore redação técnica completa, rica e totalmente alinhada ao contexto acima)'}"`;
 
   try {
     return await callGeminiWithCascade(prompt, systemPrompt);
