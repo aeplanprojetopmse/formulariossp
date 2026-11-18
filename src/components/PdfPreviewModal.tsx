@@ -13,6 +13,7 @@ import {
   ArrowLeft,
   ShieldCheck,
   Calendar,
+  Mail,
 } from 'lucide-react';
 import { ProjectData } from '../types';
 import { generateFppPdf, downloadFppPdf, formatCurrencyBRL } from '../services/pdfGenerator';
@@ -45,7 +46,11 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
     sentAt?: string;
     fileId?: string;
     fileUrl?: string;
+    emailSent?: boolean;
+    emailRecipient?: string;
+    emailMessage?: string;
   }>({ status: 'idle', message: '' });
+  const [recipientEmail, setRecipientEmail] = useState<string>(project.email || '');
   const [showPayload, setShowPayload] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -54,6 +59,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
       setModalStep(initialStep);
       setIsGenerating(true);
       setSendResult({ status: 'idle', message: '' });
+      setRecipientEmail(project.email || '');
       setShowPayload(false);
       try {
         const result = generateFppPdf(project);
@@ -86,11 +92,26 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
   };
 
   const handleSendToAeplan = async () => {
+    const trimmedEmail = recipientEmail.trim();
+    if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setSendResult({
+        status: 'error',
+        message: 'Informe um endereço de e-mail válido para receber a cópia da proposta ou deixe o campo em branco.',
+      });
+      return;
+    }
+
     setIsSending(true);
     setSendResult({ status: 'idle', message: '' });
 
     try {
-      const response = await sendPdfToAppsScript(fileName, base64);
+      const response = await sendPdfToAppsScript(fileName, base64, undefined, {
+        recipientEmail: trimmedEmail,
+        projectTitle: project.titulo,
+        proposalNumber: project.numeroProposta,
+        senderName: project.responsavelTecnico,
+        senderUnit: project.lotacao,
+      });
       const sentAt = new Date().toLocaleString('pt-BR');
       const successMessage = response.message || 'Proposta enviada para a AEPLAN com sucesso!';
 
@@ -100,6 +121,9 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
         sentAt,
         fileId: response.fileId,
         fileUrl: response.fileUrl,
+        emailSent: response.emailSent,
+        emailRecipient: response.emailRecipient || trimmedEmail,
+        emailMessage: response.emailMessage,
       });
 
       const novoHistorico = [
@@ -117,6 +141,7 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
 
       onUpdateProject({
         ...project,
+        email: trimmedEmail || project.email,
         historicoEnvios: novoHistorico,
       });
 
@@ -315,6 +340,27 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
                   </div>
                 </div>
 
+                <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/40 space-y-2">
+                  <label
+                    htmlFor="aeplan-copy-email"
+                    className="flex items-center gap-1.5 text-slate-800 font-bold"
+                  >
+                    <Mail className="w-3.5 h-3.5 text-blue-700" />
+                    <span>E-mail de quem está enviando (para receber cópia do PDF):</span>
+                  </label>
+                  <input
+                    id="aeplan-copy-email"
+                    type="email"
+                    value={recipientEmail}
+                    onChange={(e) => setRecipientEmail(e.target.value)}
+                    placeholder="Ex: seu.nome@pm.se.gov.br (opcional)"
+                    className="w-full px-3.5 py-2 text-xs bg-white text-slate-900 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                  <p className="text-[11px] text-slate-500">
+                    Ao confirmar, a proposta será protocolada no Drive da AEPLAN e uma cópia em PDF será encaminhada automaticamente para este e-mail.
+                  </p>
+                </div>
+
                 <div className="flex items-center justify-between p-3.5 rounded-xl border border-slate-200 bg-white text-slate-600">
                   <span>Destino da Integração</span>
                   <span className="font-mono text-[11px] text-slate-800">
@@ -411,6 +457,26 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
                   <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 space-y-1 sm:col-span-2">
                     <span className="text-emerald-800 font-medium">Identificador de Recebimento (Drive ID)</span>
                     <p className="font-mono font-bold text-emerald-950 break-all">{sendResult.fileId}</p>
+                  </div>
+                )}
+
+                {sendResult.emailRecipient && (
+                  <div
+                    className={`p-3.5 rounded-xl border space-y-1 sm:col-span-2 ${
+                      sendResult.emailSent
+                        ? 'bg-blue-50 border-blue-200'
+                        : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <span className="text-slate-600 font-medium flex items-center gap-1.5">
+                      <Mail className="w-3.5 h-3.5 text-blue-600" /> Cópia por E-mail ao Proponente
+                    </span>
+                    <p className="font-semibold text-slate-900">
+                      {sendResult.emailSent
+                        ? `Cópia enviada com sucesso para ${sendResult.emailRecipient}`
+                        : sendResult.emailMessage ||
+                          `Solicitação registrada para ${sendResult.emailRecipient} (verifique se o Apps Script atualizado foi implantado).`}
+                    </p>
                   </div>
                 )}
               </div>

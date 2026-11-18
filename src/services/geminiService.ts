@@ -1,4 +1,5 @@
 import { ProjectData, ThematicArea } from '../types';
+import { callGeminiViaAppsScript } from './appsScriptService';
 
 export const DEFAULT_GEMINI_KEY = '';
 
@@ -197,17 +198,65 @@ export async function callGeminiWithCascade(
       }
     } catch (serverErr: any) {
       const msg = serverErr?.message || '';
-      if (msg === 'QUOTA_EXHAUSTED_ALL' || msg === 'INVALID_API_KEY') {
+      if (msg === 'QUOTA_EXHAUSTED_ALL') {
         throw serverErr;
       }
-      if (!msg.includes('Failed to fetch') && !msg.includes('NetworkError') && msg !== 'NO_VALID_CLIENT_KEY') {
-        console.warn('Proxy respondeu com erro, verificando fallback direto...', msg);
+      if (
+        !msg.includes('Failed to fetch') &&
+        !msg.includes('NetworkError') &&
+        msg !== 'NO_VALID_CLIENT_KEY' &&
+        msg !== 'INVALID_API_KEY'
+      ) {
+        console.warn('Proxy respondeu com erro, verificando fallback...', msg);
       }
     }
   }
 
-  // 2. Direct client REST cascade (used when hosted statically without Express backend)
+  // 2. If no explicit client key is saved locally, try the Google Apps Script AI bridge first
   if (!activeKey || activeKey.startsWith('AQ.')) {
+    const bridgeRes = await callGeminiViaAppsScript(prompt, systemInstruction);
+    if (bridgeRes.supported) {
+      if (bridgeRes.text && bridgeRes.text.trim()) {
+        const modelId = bridgeRes.modelUsed || 'gemini-3.1-flash-lite';
+        const modelLabel = bridgeRes.modelLabel || 'Gemini 3.1 Flash Lite';
+        const exhausted = bridgeRes.quotaExhaustedModels || [];
+
+        emitAiModelNotice({
+          modelId,
+          modelLabel,
+          isOffline: false,
+          quotaExhausted: exhausted.length > 0,
+          quotaExhaustedModels: exhausted,
+          message:
+            exhausted.length > 0
+              ? `Cota atingida — usando ${modelLabel}`
+              : `Usando ${modelLabel}`,
+          detail:
+            exhausted.length > 0
+              ? `Cota esgotada em ${exhausted.join(', ')}. Alternado automaticamente via Apps Script.`
+              : 'Sugestão gerada via ponte segura do Apps Script.',
+        });
+
+        return {
+          text: bridgeRes.text,
+          modelId,
+          modelLabel,
+          isOffline: false,
+          quotaExhaustedModels: exhausted,
+        };
+      }
+
+      if (bridgeRes.quotaExhausted) {
+        throw new Error('QUOTA_EXHAUSTED_ALL');
+      }
+      if (bridgeRes.invalidApiKey) {
+        throw new Error('INVALID_API_KEY');
+      }
+      if (bridgeRes.noApiKey) {
+        throw new Error('NO_VALID_CLIENT_KEY');
+      }
+    }
+
     throw new Error(activeKey.startsWith('AQ.') ? 'INVALID_API_KEY' : 'NO_VALID_CLIENT_KEY');
   }
 
@@ -230,12 +279,6 @@ export async function callGeminiWithCascade(
     if (systemInstruction) {
       bodyPayload.systemInstruction = {
         parts: [{ text: systemInstruction }],
-      };
-    }
-
-    if (modelEntry.id === 'gemini-4-hydrogen') {
-      bodyPayload.generationConfig = {
-        thinkingConfig: { thinkingLevel: 'LOW' },
       };
     }
 

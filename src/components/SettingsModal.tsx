@@ -84,7 +84,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
             />
             <p className="text-[11px] text-slate-500 mt-1">
-              O PDF gerado é enviado diretamente para a AEPLAN via POST em formato <code>{`{ "fileName": "...", "base64Data": "..." }`}</code>.
+              O Apps Script recebe o PDF em JSON, envia cópia para o e-mail do proponente (se informado) e também atua como ponte segura da IA Gemini no GitHub Pages.
             </p>
           </div>
 

@@ -165,10 +165,19 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
 // Endpoint to forward/proxy the PDF to Google Apps Script (handles CORS reliably)
 app.post('/api/send-proposal', async (req: Request, res: Response) => {
   try {
-    const { scriptUrl, fileName, base64Data } = req.body;
+    const {
+      scriptUrl,
+      fileName,
+      base64Data,
+      recipientEmail,
+      projectTitle,
+      proposalNumber,
+      senderName,
+      senderUnit,
+    } = req.body;
     const targetUrl =
       scriptUrl ||
-      'https://script.google.com/macros/s/AKfycbxRqa4OXU3dn-RqGshwxtqqOqoJ8plbkJBk6D9ZpGhE2xIK4R4MtuQoZq4iWI1nF25xlQ/exec';
+      'https://script.google.com/macros/s/AKfycbxpRLMi9mMeSvkMD82pEJDK85uXknDUqV-zF2IoiWgjg5XJYpSCyRT8fCdxfIIORjPWEg/exec';
 
     if (!fileName || !base64Data) {
       return res.status(400).json({ error: 'fileName e base64Data são obrigatórios.' });
@@ -184,6 +193,11 @@ app.post('/api/send-proposal', async (req: Request, res: Response) => {
       body: JSON.stringify({
         fileName,
         base64Data: cleanedBase64,
+        recipientEmail: typeof recipientEmail === 'string' ? recipientEmail.trim() : '',
+        projectTitle: projectTitle || '',
+        proposalNumber: proposalNumber || '',
+        senderName: senderName || '',
+        senderUnit: senderUnit || '',
       }),
       redirect: 'follow',
     });
