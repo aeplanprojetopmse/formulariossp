@@ -34,32 +34,40 @@ export async function sendPdfToAppsScript(
   const scriptUrl = customUrl || getStoredScriptUrl();
   const cleanBase64 = base64Data.replace(/^data:application\/pdf;base64,/, '');
 
-  // 1. Try local server proxy first (avoids browser CORS issues)
-  try {
-    const proxyRes = await fetch('/api/send-proposal', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        scriptUrl,
-        fileName,
-        base64Data: cleanBase64,
-      }),
-    });
+  const isStaticHost =
+    typeof window !== 'undefined' &&
+    (window.location.hostname.endsWith('github.io') ||
+      window.location.hostname.endsWith('netlify.app') ||
+      window.location.hostname.endsWith('vercel.app'));
 
-    if (proxyRes.ok) {
-      const data = await proxyRes.json();
-      return {
-        status: data.status === 'success' || data.status === 200 ? 'success' : 'success',
-        message: data.message || 'Proposta enviada para a AEPLAN com sucesso!',
-        fileId: data.fileId || '',
-        fileUrl: data.fileUrl || '',
-        raw: data,
-      };
+  // 1. Try local server proxy first when backend is present (avoids browser CORS issues)
+  if (!isStaticHost) {
+    try {
+      const proxyRes = await fetch('/api/send-proposal', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          scriptUrl,
+          fileName,
+          base64Data: cleanBase64,
+        }),
+      });
+
+      if (proxyRes.ok) {
+        const data = await proxyRes.json();
+        return {
+          status: data.status === 'success' || data.status === 200 ? 'success' : 'success',
+          message: data.message || 'Proposta enviada para a AEPLAN com sucesso!',
+          fileId: data.fileId || '',
+          fileUrl: data.fileUrl || '',
+          raw: data,
+        };
+      }
+    } catch (proxyErr) {
+      console.warn('Proxy local falhou ou não está ativo, tentando envio direto...', proxyErr);
     }
-  } catch (proxyErr) {
-    console.warn('Proxy local falhou ou não está ativo, tentando envio direto...', proxyErr);
   }
 
   // 2. Direct browser fetch to Google Apps Script

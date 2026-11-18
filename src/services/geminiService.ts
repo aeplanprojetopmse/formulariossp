@@ -10,6 +10,22 @@ export const FREE_MODEL_CASCADE = [
 
 const CLIENT_QUOTA_COOLDOWN_MS = 60_000;
 const clientCooldownUntil: Record<string, number> = {};
+let backendProxyUnavailable = false;
+
+function shouldSkipBackendProxy(): boolean {
+  if (backendProxyUnavailable) return true;
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (
+      host.endsWith('github.io') ||
+      host.endsWith('netlify.app') ||
+      host.endsWith('vercel.app')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export interface AiModelNotice {
   id: string;
@@ -64,6 +80,18 @@ export function saveStoredApiKey(key: string): void {
   }
 }
 
+function isAuthStatusOrMessage(status: number, errorDetail: string): boolean {
+  return (
+    status === 401 ||
+    status === 403 ||
+    errorDetail.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') ||
+    errorDetail.includes('API key not valid') ||
+    errorDetail.includes('API_KEY_INVALID') ||
+    errorDetail.includes('PERMISSION_DENIED') ||
+    errorDetail.includes('UNAUTHENTICATED')
+  );
+}
+
 function isQuotaError(status: number, errorDetail: string): boolean {
   const lower = errorDetail.toLowerCase();
   return (
@@ -97,81 +125,90 @@ export async function callGeminiWithCascade(
   const activeKey = (customKey || getStoredApiKey() || '').trim();
   const accumulatedQuotaModels: string[] = [];
 
-  // 1. Try Server-Side API Proxy first (uses server GEMINI_API_KEY or custom key)
-  try {
-    const res = await fetch('/api/gemini/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt,
-        systemInstruction,
-        customApiKey: activeKey || undefined,
-      }),
-    });
-
-    const data = await res.json().catch(() => null);
-
-    if (res.ok && data?.text) {
-      const modelId = data.modelUsed || 'gemini-3.1-flash-lite';
-      const modelLabel = data.modelLabel || 'Gemini 3.1 Flash Lite';
-      const exhausted: string[] = Array.isArray(data.quotaExhaustedModels)
-        ? data.quotaExhaustedModels
-        : [];
-
-      emitAiModelNotice({
-        modelId,
-        modelLabel,
-        isOffline: false,
-        quotaExhausted: exhausted.length > 0,
-        quotaExhaustedModels: exhausted,
-        message:
-          exhausted.length > 0
-            ? `Cota atingida — usando ${modelLabel}`
-            : `Usando ${modelLabel}`,
-        detail:
-          exhausted.length > 0
-            ? `Cota esgotada em ${exhausted.join(', ')}. Alternado automaticamente.`
-            : 'Sugestão gerada com o modelo gratuito prioritário.',
+  // 1. Try Server-Side API Proxy first when backend exists (uses server GEMINI_API_KEY or custom key)
+  if (!shouldSkipBackendProxy()) {
+    try {
+      const res = await fetch('/api/gemini/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          systemInstruction,
+          customApiKey: activeKey || undefined,
+        }),
       });
 
-      return {
-        text: data.text,
-        modelId,
-        modelLabel,
-        isOffline: false,
-        quotaExhaustedModels: exhausted,
-      };
-    }
+      if (res.status === 404 || res.status === 405) {
+        backendProxyUnavailable = true;
+      } else {
+        const data = await res.json().catch(() => null);
 
-    if (data?.quotaExhaustedModels && Array.isArray(data.quotaExhaustedModels)) {
-      accumulatedQuotaModels.push(...data.quotaExhaustedModels);
-    }
+        if (res.ok && data?.text) {
+          const modelId = data.modelUsed || 'gemini-3.1-flash-lite';
+          const modelLabel = data.modelLabel || 'Gemini 3.1 Flash Lite';
+          const exhausted: string[] = Array.isArray(data.quotaExhaustedModels)
+            ? data.quotaExhaustedModels
+            : [];
 
-    if (res.status === 429 || data?.quotaExhausted) {
-      throw new Error('QUOTA_EXHAUSTED_ALL');
-    }
+          emitAiModelNotice({
+            modelId,
+            modelLabel,
+            isOffline: false,
+            quotaExhausted: exhausted.length > 0,
+            quotaExhaustedModels: exhausted,
+            message:
+              exhausted.length > 0
+                ? `Cota atingida — usando ${modelLabel}`
+                : `Usando ${modelLabel}`,
+            detail:
+              exhausted.length > 0
+                ? `Cota esgotada em ${exhausted.join(', ')}. Alternado automaticamente.`
+                : 'Sugestão gerada com o modelo gratuito prioritário.',
+          });
 
-    if (data?.invalidApiKey || data?.noApiKey) {
-      throw new Error(data.error || 'AUTH_UNAVAILABLE');
-    }
+          return {
+            text: data.text,
+            modelId,
+            modelLabel,
+            isOffline: false,
+            quotaExhaustedModels: exhausted,
+          };
+        }
 
-    if (data?.error) {
-      throw new Error(data.error);
-    }
-  } catch (serverErr: any) {
-    const msg = serverErr?.message || '';
-    if (msg === 'QUOTA_EXHAUSTED_ALL') {
-      throw serverErr;
-    }
-    // If running statically (GitHub Pages) where /api/* doesn't exist, continue to direct REST cascade
-    if (!msg.includes('Failed to fetch') && !msg.includes('NetworkError') && !msg.includes('AUTH_UNAVAILABLE')) {
-      console.warn('Proxy respondeu com erro, verificando fallback direto...', msg);
+        if (data?.quotaExhaustedModels && Array.isArray(data.quotaExhaustedModels)) {
+          accumulatedQuotaModels.push(...data.quotaExhaustedModels);
+        }
+
+        if (res.status === 429 || data?.quotaExhausted) {
+          throw new Error('QUOTA_EXHAUSTED_ALL');
+        }
+
+        if (data?.invalidApiKey) {
+          throw new Error('INVALID_API_KEY');
+        }
+
+        if (data?.noApiKey) {
+          throw new Error('NO_VALID_CLIENT_KEY');
+        }
+
+        if (data?.error) {
+          throw new Error(data.error);
+        }
+      }
+    } catch (serverErr: any) {
+      const msg = serverErr?.message || '';
+      if (msg === 'QUOTA_EXHAUSTED_ALL' || msg === 'INVALID_API_KEY') {
+        throw serverErr;
+      }
+      if (!msg.includes('Failed to fetch') && !msg.includes('NetworkError') && msg !== 'NO_VALID_CLIENT_KEY') {
+        console.warn('Proxy respondeu com erro, verificando fallback direto...', msg);
+      }
     }
   }
 
   // 2. Direct client REST cascade (used when hosted statically without Express backend)
   if (!activeKey || activeKey.startsWith('AQ.')) {
-    throw new Error('NO_VALID_CLIENT_KEY');
+    throw new Error(activeKey.startsWith('AQ.') ? 'INVALID_API_KEY' : 'NO_VALID_CLIENT_KEY');
   }
 
   const now = Date.now();
@@ -248,6 +285,10 @@ export async function callGeminiWithCascade(
         // ignore parse failure
       }
 
+      if (isAuthStatusOrMessage(response.status, errorDetail)) {
+        throw new Error('INVALID_API_KEY');
+      }
+
       if (isQuotaError(response.status, errorDetail)) {
         clientCooldownUntil[modelEntry.id] = Date.now() + CLIENT_QUOTA_COOLDOWN_MS;
         accumulatedQuotaModels.push(modelEntry.label);
@@ -260,7 +301,7 @@ export async function callGeminiWithCascade(
 
       throw new Error(`Erro na API do Gemini: ${errorDetail}`);
     } catch (fetchErr: any) {
-      if (fetchErr?.message?.startsWith('Erro na API')) {
+      if (fetchErr?.message === 'INVALID_API_KEY' || fetchErr?.message?.startsWith('Erro na API')) {
         throw fetchErr;
       }
       clientCooldownUntil[modelEntry.id] = Date.now() + CLIENT_QUOTA_COOLDOWN_MS;
@@ -269,6 +310,57 @@ export async function callGeminiWithCascade(
   }
 
   throw new Error('QUOTA_EXHAUSTED_ALL');
+}
+
+function getOfflineFallbackInfo(apiErr: any): {
+  quotaExhausted: boolean;
+  quotaExhaustedModels: string[];
+  message: string;
+  detail: string;
+  modelLabel: string;
+} {
+  const errCode = apiErr?.message || '';
+
+  if (errCode === 'NO_VALID_CLIENT_KEY') {
+    return {
+      quotaExhausted: false,
+      quotaExhaustedModels: [],
+      message: 'Chave Gemini não configurada — usando sugestão offline',
+      detail: shouldSkipBackendProxy()
+        ? 'O GitHub Pages é estático (sem servidor). Abra o app pelo link do AI Studio ou informe uma chave Gemini gratuita nas Configurações.'
+        : 'Nenhuma chave de API configurada no servidor. Configure GEMINI_API_KEY em Settings > Secrets ou nas Configurações.',
+      modelLabel: 'Sugestão Offline (Sem chave configurada)',
+    };
+  }
+
+  if (errCode === 'INVALID_API_KEY') {
+    return {
+      quotaExhausted: false,
+      quotaExhaustedModels: [],
+      message: 'Chave de API inválida — usando sugestão offline',
+      detail:
+        'A chave configurada em Settings > Secrets ou nas Configurações foi recusada pela API Gemini (use uma chave iniciada com AIza...).',
+      modelLabel: 'Sugestão Offline (Chave recusada)',
+    };
+  }
+
+  if (errCode === 'QUOTA_EXHAUSTED_ALL') {
+    return {
+      quotaExhausted: true,
+      quotaExhaustedModels: FREE_MODEL_CASCADE.map((m) => m.label),
+      message: 'Cota esgotada — carregando sugestão offline',
+      detail: 'As cotas gratuitas dos modelos online foram atingidas; sugestão gerada localmente.',
+      modelLabel: 'Sugestão Offline (Cota esgotada)',
+    };
+  }
+
+  return {
+    quotaExhausted: false,
+    quotaExhaustedModels: [],
+    message: 'IA online indisponível — carregando sugestão offline',
+    detail: errCode || 'Sem resposta dos modelos online no momento; sugestão gerada localmente.',
+    modelLabel: 'Sugestão Offline',
+  };
 }
 
 function buildComprehensiveProjectContext(projectContext: Partial<ProjectData>, excludeFieldKey?: string): string {
@@ -447,14 +539,15 @@ Diretrizes de preenchimento:
     rawText = result.text;
   } catch (apiErr: any) {
     console.warn('Modelos Gemini indisponíveis, acionando gerador offline completo...', apiErr?.message);
+    const info = getOfflineFallbackInfo(apiErr);
     emitAiModelNotice({
       modelId: 'offline',
-      modelLabel: 'Modo Offline',
+      modelLabel: info.modelLabel,
       isOffline: true,
-      quotaExhausted: true,
-      quotaExhaustedModels: FREE_MODEL_CASCADE.map((m) => m.label),
-      message: 'Cota esgotada — carregando sugestão offline',
-      detail: 'Nenhuma cota gratuita disponível no momento; proposta estruturada localmente.',
+      quotaExhausted: info.quotaExhausted,
+      quotaExhaustedModels: info.quotaExhaustedModels,
+      message: info.message,
+      detail: info.detail,
     });
     return generateOfflineProposal(ideia, area, instituicao);
   }
@@ -711,21 +804,22 @@ RASCUNHO ATUAL DIGITADO PELO USUÁRIO:
   } catch (apiErr: any) {
     console.warn('Modelos Gemini indisponíveis, acionando sugestão offline contextual...', apiErr?.message);
     const offlineText = generateOfflineFieldSuggestion(fieldKey, currentValue, projectContext);
+    const info = getOfflineFallbackInfo(apiErr);
     emitAiModelNotice({
       modelId: 'offline',
-      modelLabel: 'Modo Offline',
+      modelLabel: info.modelLabel,
       isOffline: true,
-      quotaExhausted: true,
-      quotaExhaustedModels: FREE_MODEL_CASCADE.map((m) => m.label),
-      message: 'Cota esgotada — carregando sugestão offline',
-      detail: 'Cotas gratuitas da API esgotadas ou chave ausente; sugestão gerada pelo motor contextual local.',
+      quotaExhausted: info.quotaExhausted,
+      quotaExhaustedModels: info.quotaExhaustedModels,
+      message: info.message,
+      detail: info.detail,
     });
     return {
       text: offlineText,
       modelId: 'offline',
-      modelLabel: 'Sugestão Offline',
+      modelLabel: info.modelLabel,
       isOffline: true,
-      quotaExhaustedModels: FREE_MODEL_CASCADE.map((m) => m.label),
+      quotaExhaustedModels: info.quotaExhaustedModels,
     };
   }
 }

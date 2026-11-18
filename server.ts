@@ -124,10 +124,12 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
         const status = err?.status || err?.statusCode;
 
         if (isAuthError(errMsg)) {
+          console.warn(`Erro de autenticação na API Gemini (${modelEntry.id}):`, errMsg);
           return res.status(401).json({
             error:
               'Chave de API inválida. Configure uma chave do Google AI Studio iniciada com "AIzaSy..." em Settings > Secrets ou nas Configurações.',
             invalidApiKey: true,
+            authReason: errMsg.slice(0, 160),
           });
         }
 
