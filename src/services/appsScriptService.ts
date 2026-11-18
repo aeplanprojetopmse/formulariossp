@@ -29,11 +29,14 @@ export interface AppsScriptGeminiResponse {
   error?: string;
 }
 
-const LEGACY_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbxRqa4OXU3dn-RqGshwxtqqOqoJ8plbkJBk6D9ZpGhE2xIK4R4MtuQoZq4iWI1nF25xlQ/exec';
+const LEGACY_SCRIPT_URLS = [
+  'https://script.google.com/macros/s/AKfycbxRqa4OXU3dn-RqGshwxtqqOqoJ8plbkJBk6D9ZpGhE2xIK4R4MtuQoZq4iWI1nF25xlQ/exec',
+  'https://script.google.com/macros/s/AKfycbxpRLMi9mMeSvkMD82pEJDK85uXknDUqV-zF2IoiWgjg5XJYpSCyRT8fCdxfIIORjPWEg/exec',
+  'https://script.google.com/macros/s/AKfycbwGclaLbpujDGRMPRVky7oQR-hLsK0b431aMwqc6mgpDznAjgM4VeVXmF_c0VOMygjxMQ/exec',
+];
 
 export const DEFAULT_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbxpRLMi9mMeSvkMD82pEJDK85uXknDUqV-zF2IoiWgjg5XJYpSCyRT8fCdxfIIORjPWEg/exec';
+  'https://script.google.com/macros/s/AKfycbzrpI8RKqXI3QBF-7mCVnQOSLlQRXAnaJaDQ7U3T2CFlDb1jLkdg0JGuwANyNkm_cessg/exec';
 
 let appsScriptGeminiUnsupported = false;
 
@@ -42,7 +45,7 @@ export function getStoredScriptUrl(): string {
     const saved = localStorage.getItem('SSP_SCRIPT_URL');
     if (saved && saved.trim()) {
       const trimmed = saved.trim();
-      if (trimmed === LEGACY_SCRIPT_URL) {
+      if (LEGACY_SCRIPT_URLS.includes(trimmed)) {
         localStorage.setItem('SSP_SCRIPT_URL', DEFAULT_SCRIPT_URL);
         return DEFAULT_SCRIPT_URL;
       }

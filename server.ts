@@ -20,7 +20,7 @@ const DEFAULT_API_KEY = process.env.GEMINI_API_KEY || '';
 const MODEL_CASCADE = [
   { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite', useLowThinking: false },
   { id: 'gemini-4-hydrogen', label: 'Gemini 4 Flash', useLowThinking: true },
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', useLowThinking: false },
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', useLowThinking: false },
 ] as const;
 
 const QUOTA_COOLDOWN_MS = 60_000;
@@ -127,7 +127,7 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
           console.warn(`Erro de autenticação na API Gemini (${modelEntry.id}):`, errMsg);
           return res.status(401).json({
             error:
-              'Chave de API inválida. Configure uma chave do Google AI Studio iniciada com "AIzaSy..." em Settings > Secrets ou nas Configurações.',
+              'Chave de API inválida ou sem permissão. Verifique a chave configurada em Settings > Secrets ou nas Configurações.',
             invalidApiKey: true,
             authReason: errMsg.slice(0, 160),
           });
@@ -177,7 +177,7 @@ app.post('/api/send-proposal', async (req: Request, res: Response) => {
     } = req.body;
     const targetUrl =
       scriptUrl ||
-      'https://script.google.com/macros/s/AKfycbxpRLMi9mMeSvkMD82pEJDK85uXknDUqV-zF2IoiWgjg5XJYpSCyRT8fCdxfIIORjPWEg/exec';
+      'https://script.google.com/macros/s/AKfycbwMAP10qjBx7L6mPjD8jBA1oRWjDYkOXaFO3mXEdNGjlSod5yz6FDwksKTYZMIEyCqVVg/exec';
 
     if (!fileName || !base64Data) {
       return res.status(400).json({ error: 'fileName e base64Data são obrigatórios.' });

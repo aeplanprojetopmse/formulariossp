@@ -6,7 +6,7 @@ export const DEFAULT_GEMINI_KEY = '';
 export const FREE_MODEL_CASCADE = [
   { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite' },
   { id: 'gemini-4-hydrogen', label: 'Gemini 4 Flash' },
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
 ] as const;
 
 const CLIENT_QUOTA_COOLDOWN_MS = 60_000;
@@ -213,7 +213,7 @@ export async function callGeminiWithCascade(
   }
 
   // 2. If no explicit client key is saved locally, try the Google Apps Script AI bridge first
-  if (!activeKey || activeKey.startsWith('AQ.')) {
+  if (!activeKey) {
     const bridgeRes = await callGeminiViaAppsScript(prompt, systemInstruction);
     if (bridgeRes.supported) {
       if (bridgeRes.text && bridgeRes.text.trim()) {
@@ -257,7 +257,7 @@ export async function callGeminiWithCascade(
       }
     }
 
-    throw new Error(activeKey.startsWith('AQ.') ? 'INVALID_API_KEY' : 'NO_VALID_CLIENT_KEY');
+    throw new Error('NO_VALID_CLIENT_KEY');
   }
 
   const now = Date.now();
@@ -382,7 +382,7 @@ function getOfflineFallbackInfo(apiErr: any): {
       quotaExhaustedModels: [],
       message: 'Chave de API inválida — usando sugestão offline',
       detail:
-        'A chave configurada em Settings > Secrets ou nas Configurações foi recusada pela API Gemini (use uma chave iniciada com AIza...).',
+        'A chave configurada em Settings > Secrets, no Apps Script ou nas Configurações foi recusada pela API Gemini.',
       modelLabel: 'Sugestão Offline (Chave recusada)',
     };
   }
