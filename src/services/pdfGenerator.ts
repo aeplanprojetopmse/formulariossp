@@ -66,6 +66,23 @@ export function generateFppPdf(project: ProjectData): PdfGenerationResult {
 
     // Institutional identification table (Follows directly)
     const tableData = [
+      [
+        {
+          content: 'Nº DA PROPOSTA: ' + (project.numeroProposta || 'Não gerado'),
+          styles: { fontStyle: 'bold' as const, fillColor: [235, 240, 248] as [number, number, number], textColor: [15, 45, 95] as [number, number, number] },
+        },
+        {
+          content: 'ÁREA TEMÁTICA: ' + (project.areaTematica || 'MVI'),
+          styles: { fontStyle: 'bold' as const, fillColor: [235, 240, 248] as [number, number, number], textColor: [15, 45, 95] as [number, number, number] },
+        },
+      ],
+      [
+        {
+          content: 'TÍTULO DO PROJETO: ' + (project.titulo || 'Não informado'),
+          colSpan: 2,
+          styles: { fontStyle: 'bold' as const, fontSize: 8.5, textColor: [10, 25, 55] as [number, number, number] },
+        },
+      ],
       [{ content: 'INSTITUIÇÃO: ' + (project.instituicao || 'Polícia Militar do Estado de Sergipe - PMSE / SSP'), colSpan: 2 }],
       [{ content: 'RESPONSÁVEL TÉCNICO DO PROJETO: ' + (project.responsavelTecnico || ''), colSpan: 2 }],
       [

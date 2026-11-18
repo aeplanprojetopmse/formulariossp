@@ -17,6 +17,12 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const DEFAULT_API_KEY = process.env.GEMINI_API_KEY || '';
 
+const MODEL_CASCADE = [
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite' },
+] as const;
+
 function getGenAIClient(apiKey?: string) {
   const key = apiKey || DEFAULT_API_KEY;
   return new GoogleGenAI({
@@ -29,7 +35,35 @@ function getGenAIClient(apiKey?: string) {
   });
 }
 
-// Endpoint to generate content or suggestions with Gemini
+function isAuthError(errMsg: string): boolean {
+  return (
+    errMsg.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') ||
+    errMsg.includes('API key not valid') ||
+    errMsg.includes('API_KEY_INVALID') ||
+    errMsg.includes('PERMISSION_DENIED') ||
+    errMsg.includes('UNAUTHENTICATED')
+  );
+}
+
+function isQuotaOrModelUnavailable(errMsg: string, status?: number): boolean {
+  const lower = errMsg.toLowerCase();
+  return (
+    status === 429 ||
+    status === 404 ||
+    status === 503 ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('429') ||
+    lower.includes('quota') ||
+    lower.includes('rate limit') ||
+    lower.includes('too many requests') ||
+    lower.includes('not_found') ||
+    lower.includes('404') ||
+    lower.includes('overloaded') ||
+    lower.includes('unavailable')
+  );
+}
+
+// Endpoint to generate content or suggestions with Gemini using free model cascade
 app.post('/api/gemini/generate', async (req: Request, res: Response) => {
   try {
     const { prompt, systemInstruction, customApiKey } = req.body;
@@ -37,42 +71,66 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Prompt é obrigatório.' });
     }
 
-    const ai = getGenAIClient(customApiKey);
-    let text = '';
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
-        contents: prompt,
-        config: systemInstruction ? { systemInstruction } : undefined,
-      });
-      text = response.text || '';
-    } catch (primaryErr: any) {
-      console.warn('Tentativa com gemini-1.5-flash encontrou erro, tentando modelo alternativo...', primaryErr?.message);
-      const fallbackResponse = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-lite',
-        contents: prompt,
-        config: systemInstruction ? { systemInstruction } : undefined,
-      });
-      text = fallbackResponse.text || '';
-    }
-
-    res.json({ text });
-  } catch (err: any) {
-    const errMsg = err?.message || '';
-    if (
-      errMsg.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') ||
-      errMsg.includes('API key not valid') ||
-      errMsg.includes('UNAUTHENTICATED')
-    ) {
+    const effectiveKey = (customApiKey || DEFAULT_API_KEY || '').trim();
+    if (!effectiveKey) {
       return res.status(401).json({
-        error:
-          'Chave de API inválida: A chave informada inicia com "AQ.", que é um token de sessão/OAuth. As chaves gratuitas da API do Gemini no Google AI Studio iniciam com "AIzaSy...". Gere uma chave em https://aistudio.google.com/apikey e cole nas Configurações (ícone ⚙️).',
+        error: 'Nenhuma chave de API configurada no servidor.',
+        noApiKey: true,
       });
     }
 
+    const ai = getGenAIClient(effectiveKey);
+    const quotaExhaustedModels: string[] = [];
+
+    for (const modelEntry of MODEL_CASCADE) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelEntry.id,
+          contents: prompt,
+          config: systemInstruction ? { systemInstruction } : undefined,
+        });
+
+        const text = response.text || '';
+        if (text.trim()) {
+          return res.json({
+            text,
+            modelUsed: modelEntry.id,
+            modelLabel: modelEntry.label,
+            quotaExhaustedModels,
+          });
+        }
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        const status = err?.status || err?.statusCode;
+
+        if (isAuthError(errMsg)) {
+          return res.status(401).json({
+            error:
+              'Chave de API inválida. Configure uma chave do Google AI Studio iniciada com "AIzaSy..." em Settings > Secrets ou nas Configurações.',
+            invalidApiKey: true,
+          });
+        }
+
+        if (isQuotaOrModelUnavailable(errMsg, status)) {
+          console.warn(`Modelo ${modelEntry.id} indisponível ou cota esgotada:`, errMsg);
+          quotaExhaustedModels.push(modelEntry.label);
+          continue;
+        }
+
+        console.warn(`Erro inesperado no modelo ${modelEntry.id}:`, errMsg);
+        quotaExhaustedModels.push(modelEntry.label);
+      }
+    }
+
+    return res.status(429).json({
+      error: 'Cota gratuita esgotada em todos os modelos disponíveis.',
+      quotaExhausted: true,
+      quotaExhaustedModels,
+    });
+  } catch (err: any) {
     console.error('Erro na API Gemini:', err);
     res.status(500).json({
-      error: errMsg || 'Erro ao comunicar com a API do Gemini.',
+      error: err?.message || 'Erro ao comunicar com a API do Gemini.',
     });
   }
 });

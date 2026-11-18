@@ -2,6 +2,49 @@ import { ProjectData, ThematicArea } from '../types';
 
 export const DEFAULT_GEMINI_KEY = '';
 
+export const FREE_MODEL_CASCADE = [
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite' },
+] as const;
+
+export interface AiModelNotice {
+  id: string;
+  modelId: string;
+  modelLabel: string;
+  isOffline: boolean;
+  quotaExhausted: boolean;
+  quotaExhaustedModels: string[];
+  message: string;
+  detail: string;
+}
+
+export interface AiGenerationResult {
+  text: string;
+  modelId: string;
+  modelLabel: string;
+  isOffline: boolean;
+  quotaExhaustedModels: string[];
+}
+
+type NoticeListener = (notice: AiModelNotice) => void;
+const listeners = new Set<NoticeListener>();
+
+export function subscribeAiModelNotice(listener: NoticeListener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function emitAiModelNotice(notice: Omit<AiModelNotice, 'id'>) {
+  const fullNotice: AiModelNotice = {
+    ...notice,
+    id: `ai-notice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+  };
+  listeners.forEach((fn) => fn(fullNotice));
+}
+
 export function getStoredApiKey(): string {
   if (typeof window !== 'undefined') {
     const saved = localStorage.getItem('SSP_GEMINI_API_KEY');
@@ -18,17 +61,35 @@ export function saveStoredApiKey(key: string): void {
   }
 }
 
+function isQuotaOrUnavailable(status: number, errorDetail: string): boolean {
+  const lower = errorDetail.toLowerCase();
+  return (
+    status === 429 ||
+    status === 404 ||
+    status === 503 ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('quota') ||
+    lower.includes('rate limit') ||
+    lower.includes('too many requests') ||
+    lower.includes('not_found') ||
+    lower.includes('unavailable')
+  );
+}
+
 /**
- * Sends a prompt to Gemini via Server-Side Proxy or direct browser REST fallback
+ * Sends a prompt to Gemini using the server-side proxy cascade first,
+ * falling back to direct browser REST cascade (for static hosting) and returning
+ * model metadata so the UI can notify the user.
  */
-export async function callGeminiApi(
+export async function callGeminiWithCascade(
   prompt: string,
   systemInstruction?: string,
   customKey?: string
-): Promise<string> {
-  const activeKey = customKey || getStoredApiKey();
+): Promise<AiGenerationResult> {
+  const activeKey = (customKey || getStoredApiKey() || '').trim();
+  const accumulatedQuotaModels: string[] = [];
 
-  // Try Server-Side API first (recommended architecture)
+  // 1. Try Server-Side API Proxy first (uses server GEMINI_API_KEY or custom key)
   try {
     const res = await fetch('/api/gemini/generate', {
       method: 'POST',
@@ -36,78 +97,249 @@ export async function callGeminiApi(
       body: JSON.stringify({
         prompt,
         systemInstruction,
-        customApiKey: activeKey,
+        customApiKey: activeKey || undefined,
       }),
     });
 
-    if (res.ok) {
-      const data = await res.json();
-      if (data.text) {
-        return data.text;
-      }
-    } else {
-      const errJson = await res.json().catch(() => null);
-      if (errJson?.error) {
-        throw new Error(errJson.error);
-      }
+    const data = await res.json().catch(() => null);
+
+    if (res.ok && data?.text) {
+      const modelId = data.modelUsed || 'gemini-3.8-flash';
+      const modelLabel = data.modelLabel || 'Gemini 3.8 Flash';
+      const exhausted: string[] = Array.isArray(data.quotaExhaustedModels)
+        ? data.quotaExhaustedModels
+        : [];
+
+      emitAiModelNotice({
+        modelId,
+        modelLabel,
+        isOffline: false,
+        quotaExhausted: exhausted.length > 0,
+        quotaExhaustedModels: exhausted,
+        message:
+          exhausted.length > 0
+            ? `Cota atingida — usando ${modelLabel}`
+            : `Usando ${modelLabel}`,
+        detail:
+          exhausted.length > 0
+            ? `Cota esgotada em ${exhausted.join(', ')}. Alternado automaticamente.`
+            : 'Sugestão gerada com o modelo gratuito prioritário.',
+      });
+
+      return {
+        text: data.text,
+        modelId,
+        modelLabel,
+        isOffline: false,
+        quotaExhaustedModels: exhausted,
+      };
+    }
+
+    if (data?.quotaExhaustedModels && Array.isArray(data.quotaExhaustedModels)) {
+      accumulatedQuotaModels.push(...data.quotaExhaustedModels);
+    }
+
+    if (res.status === 429 || data?.quotaExhausted) {
+      throw new Error('QUOTA_EXHAUSTED_ALL');
+    }
+
+    if (data?.invalidApiKey || data?.noApiKey) {
+      throw new Error(data.error || 'AUTH_UNAVAILABLE');
+    }
+
+    if (data?.error) {
+      throw new Error(data.error);
     }
   } catch (serverErr: any) {
-    if (serverErr.message && !serverErr.message.includes('Failed to fetch')) {
+    const msg = serverErr?.message || '';
+    if (msg === 'QUOTA_EXHAUSTED_ALL') {
       throw serverErr;
     }
-    // If backend proxy is unavailable (e.g. static site or GitHub Pages), continue to direct fetch
-    console.info('Proxy do servidor indisponível. Alternando para chamada direta do navegador...');
+    // If running statically (GitHub Pages) where /api/* doesn't exist, continue to direct REST cascade
+    if (!msg.includes('Failed to fetch') && !msg.includes('NetworkError') && !msg.includes('AUTH_UNAVAILABLE')) {
+      console.warn('Proxy respondeu com erro, verificando fallback direto...', msg);
+    }
   }
 
-  // Direct client fallback to Google Generative AI REST API
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(
-    activeKey
-  )}`;
+  // 2. Direct client REST cascade (used when hosted statically without Express backend)
+  if (!activeKey || activeKey.startsWith('AQ.')) {
+    throw new Error('NO_VALID_CLIENT_KEY');
+  }
 
-  const bodyPayload: any = {
-    contents: [{ parts: [{ text: prompt }] }],
-  };
+  for (const modelEntry of FREE_MODEL_CASCADE) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelEntry.id}:generateContent?key=${encodeURIComponent(
+      activeKey
+    )}`;
 
-  if (systemInstruction) {
-    bodyPayload.systemInstruction = {
-      parts: [{ text: systemInstruction }],
+    const bodyPayload: any = {
+      contents: [{ parts: [{ text: prompt }] }],
     };
-  }
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(bodyPayload),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    let errorDetail = errorText;
-    try {
-      const errJson = JSON.parse(errorText);
-      errorDetail = errJson.error?.message || errorText;
-    } catch {}
-
-    if (
-      errorDetail.includes('PROXY_GENERATION_DISABLED') ||
-      errorDetail.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') ||
-      errorDetail.includes('API key not valid')
-    ) {
-      throw new Error(
-        `Chave de API inválida: A chave informada inicia com "AQ.", que é um token de sessão/OAuth. As chaves gratuitas da API do Gemini no Google AI Studio iniciam com "AIzaSy...". Você pode gerar uma chave em https://aistudio.google.com/apikey e colá-la no ícone ⚙️ (Configurações).`
-      );
+    if (systemInstruction) {
+      bodyPayload.systemInstruction = {
+        parts: [{ text: systemInstruction }],
+      };
     }
 
-    throw new Error(`Erro na API do Gemini: ${errorDetail}`);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyPayload),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text && text.trim()) {
+          emitAiModelNotice({
+            modelId: modelEntry.id,
+            modelLabel: modelEntry.label,
+            isOffline: false,
+            quotaExhausted: accumulatedQuotaModels.length > 0,
+            quotaExhaustedModels: accumulatedQuotaModels,
+            message:
+              accumulatedQuotaModels.length > 0
+                ? `Cota atingida — usando ${modelEntry.label}`
+                : `Usando ${modelEntry.label}`,
+            detail:
+              accumulatedQuotaModels.length > 0
+                ? `Cota esgotada em ${accumulatedQuotaModels.join(', ')}. Alternado automaticamente.`
+                : 'Sugestão gerada com o modelo gratuito prioritário.',
+          });
+
+          return {
+            text,
+            modelId: modelEntry.id,
+            modelLabel: modelEntry.label,
+            isOffline: false,
+            quotaExhaustedModels: accumulatedQuotaModels,
+          };
+        }
+      }
+
+      const errorText = await response.text().catch(() => '');
+      let errorDetail = errorText;
+      try {
+        const errJson = JSON.parse(errorText);
+        errorDetail = errJson.error?.message || errorText;
+      } catch {
+        // ignore parse failure
+      }
+
+      if (isQuotaOrUnavailable(response.status, errorDetail)) {
+        accumulatedQuotaModels.push(modelEntry.label);
+        continue;
+      }
+
+      throw new Error(`Erro na API do Gemini: ${errorDetail}`);
+    } catch (fetchErr: any) {
+      if (fetchErr?.message?.startsWith('Erro na API')) {
+        throw fetchErr;
+      }
+      accumulatedQuotaModels.push(modelEntry.label);
+    }
   }
 
-  const result = await response.json();
-  const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new Error('Nenhuma resposta retornada pela IA.');
+  throw new Error('QUOTA_EXHAUSTED_ALL');
+}
+
+function buildComprehensiveProjectContext(projectContext: Partial<ProjectData>, excludeFieldKey?: string): string {
+  const contextParts: string[] = [];
+  if (projectContext.areaTematica) {
+    const areaLabels: Record<ThematicArea, string> = {
+      MVI: 'MVI - Redução de Mortes Violentas Intencionais',
+      EVM: 'EVM - Enfrentamento à Violência contra a Mulher',
+      MQV: 'MQV - Melhoria da Qualidade de Vida e Valorização Profissional',
+    };
+    contextParts.push(`Área Temática: ${areaLabels[projectContext.areaTematica]}`);
+  }
+  if (projectContext.numeroProposta) contextParts.push(`Protocolo da Proposta: ${projectContext.numeroProposta}`);
+  if (excludeFieldKey !== 'titulo' && projectContext.titulo?.trim()) {
+    contextParts.push(`Título do Projeto: "${projectContext.titulo.trim()}"`);
+  }
+  if (projectContext.instituicao?.trim()) contextParts.push(`Instituição: ${projectContext.instituicao.trim()}`);
+  if (projectContext.lotacao?.trim()) contextParts.push(`Lotação / Unidade / OPM: ${projectContext.lotacao.trim()}`);
+  if (projectContext.responsavelTecnico?.trim()) {
+    contextParts.push(
+      `Responsável Técnico: ${projectContext.responsavelTecnico.trim()}${
+        projectContext.postoGraduacaoCargo ? ` (${projectContext.postoGraduacaoCargo.trim()})` : ''
+      }`
+    );
+  }
+  if (excludeFieldKey !== 'objetivoGeral' && projectContext.objetivoGeral?.trim()) {
+    contextParts.push(`I. Objetivo Geral:\n${projectContext.objetivoGeral.trim()}`);
+  }
+  if (excludeFieldKey !== 'objetivosEspecificos' && projectContext.objetivosEspecificos?.trim()) {
+    contextParts.push(`II. Objetivos Específicos:\n${projectContext.objetivosEspecificos.trim()}`);
+  }
+  if (excludeFieldKey !== 'justificativa' && projectContext.justificativa?.trim()) {
+    contextParts.push(`III. Justificativa:\n${projectContext.justificativa.trim()}`);
+  }
+  if (
+    excludeFieldKey !== 'publicoAlvoDireto' &&
+    excludeFieldKey !== 'publicoAlvoIndireto' &&
+    (projectContext.publicoAlvoDireto?.trim() || projectContext.publicoAlvoIndireto?.trim())
+  ) {
+    contextParts.push(
+      `IV. Público-Alvo:\n- Direto: ${projectContext.publicoAlvoDireto?.trim() || 'Não informado'}\n- Indireto: ${
+        projectContext.publicoAlvoIndireto?.trim() || 'Não informado'
+      }`
+    );
+  }
+  if (excludeFieldKey !== 'resultadosEsperados' && projectContext.resultadosEsperados?.trim()) {
+    contextParts.push(`V. Resultados Esperados:\n${projectContext.resultadosEsperados.trim()}`);
+  }
+  if (excludeFieldKey !== 'metas' && projectContext.metas?.trim()) {
+    contextParts.push(`VI. Metas:\n${projectContext.metas.trim()}`);
+  }
+  if (excludeFieldKey !== 'sustentabilidade' && projectContext.sustentabilidade?.trim()) {
+    contextParts.push(`VII. Sustentabilidade:\n${projectContext.sustentabilidade.trim()}`);
+  }
+  if (excludeFieldKey !== 'mensuracaoResultados' && projectContext.mensuracaoResultados?.trim()) {
+    contextParts.push(`VIII. Mensuração de Resultados:\n${projectContext.mensuracaoResultados.trim()}`);
   }
 
-  return text;
+  const filledLocations = (projectContext.planoLocalizacao || []).filter(
+    (l) => l.item?.trim() || l.endereco?.trim()
+  );
+  if (filledLocations.length > 0) {
+    const locList = filledLocations
+      .map((l) => `- ${l.quantidade || 1}x ${l.item || 'Item'} -> ${l.endereco || 'Sergipe'}`)
+      .join('\n');
+    contextParts.push(`IX. Plano de Localização:\n${locList}`);
+  }
+
+  const filledMaterials = (projectContext.materiaisServicos || []).filter(
+    (m) => m.materialServico && m.materialServico.trim() !== ''
+  );
+  if (filledMaterials.length > 0) {
+    let total = 0;
+    const matList = filledMaterials
+      .map((m) => {
+        const sub = m.valorTotal || m.quantidade * (m.valorUnitario || 0);
+        total += sub;
+        const natureza = m.naturezaDespesa === '3.3.90' ? '3.3.90 Custeio' : '4.4.90 Investimento';
+        return `- ${m.quantidade}x ${m.materialServico} [${natureza}]${
+          m.descricaoSucinta ? ` — ${m.descricaoSucinta}` : ''
+        } (Total: R$ ${sub.toLocaleString('pt-BR', { minimumFractionDigits: 2 })})`;
+      })
+      .join('\n');
+    contextParts.push(
+      `X. Materiais e Serviços Orçados (Total Geral: R$ ${total.toLocaleString('pt-BR', {
+        minimumFractionDigits: 2,
+      })}):\n${matList}`
+    );
+  }
+
+  if (excludeFieldKey !== 'pesquisaPrecosObservacoes' && projectContext.pesquisaPrecosObservacoes?.trim()) {
+    contextParts.push(`Pesquisa de Preços:\n${projectContext.pesquisaPrecosObservacoes.trim()}`);
+  }
+  if (excludeFieldKey !== 'implementacao' && projectContext.implementacao?.trim()) {
+    contextParts.push(`XI. Implementação:\n${projectContext.implementacao.trim()}`);
+  }
+
+  return contextParts.join('\n\n');
 }
 
 /**
@@ -121,44 +353,43 @@ export async function generateFullProposal(
   const areaDescMap: Record<ThematicArea, string> = {
     MVI: 'MVI - Redução de Mortes Violentas Intencionais (Portaria MJSP nº 685/2024 / Eixo Enfrentamento à Criminalidade Violenta)',
     EVM: 'EVM - Enfrentamento à Violência contra a Mulher (Patrulha Maria da Penha / Sala Lilás / Eixo Proteção aos Vulneráveis)',
-    MQV: 'MQV - Melhoria da Qualidade de Vida e Valorização dos Profissionais de Segurança Pública (Saúde física, mental e salubridade)',
+    MQV: 'MQV - Melhoria da Qualidade de Vida e Valorização dos Profissionais de Segurança Pública (Saúde física, mental, infraestrutura e salubridade)',
   };
 
-  const systemInstruction = `Você é um Oficial Especialista em Planejamento Estratégico e Gestão de Projetos da Segurança Pública do Estado de Sergipe (SSP/SE).
-Sua missão é redigir o preenchimento técnico e formal do FORMULÁRIO DE PROPOSTA DE PROJETO (FPP), conforme a Portaria SSP nº 1998/2025, Lei nº 13.756/2018 (FNSP) e Lei nº 14.133/2021.
-A resposta DEVE ser estritamente um objeto JSON válido (sem marcadores de código Markdown adicionais fora do JSON, ou envolvido em \`\`\`json ... \`\`\`), contendo os seguintes campos:
-- titulo (string claro e formal)
-- objetivoGeral (string no infinitivo com alinhamento legal)
-- objetivosEspecificos (string com lista numerada de 3 a 5 itens)
-- justificativa (string técnica descrevendo o problema, contexto da OPM em Sergipe e como o objeto soluciona)
-- publicoAlvoDireto (string com quantitativo exato de policiais/servidores)
-- publicoAlvoIndireto (string com quantitativo e dados populacionais do município/região de Sergipe)
-- resultadosEsperados (string com impactos e benefícios mensuráveis)
-- metas (string com alvos quantitativos e prazos)
-- sustentabilidade (string com vida útil, manutenção, combustível e contratos)
-- mensuracaoResultados (string citando ferramentas como ROP/BO, estatísticas SSP e indicadores)
-- planoLocalizacao (array de objetos { item, quantidade, endereco em Sergipe })
-- materiaisServicos (array de objetos { materialServico, descricaoSucinta, modeloMarcaReferencia, naturezaDespesa ("4.4.90" para investimento ou "3.3.90" para custeio), quantidade, valorUnitario, valorTotal })
-- pesquisaPrecosObservacoes (string justificando parâmetros de preço conforme legislação)
-- implementacao (string detalhando etapas e cronograma pós-aquisição)`;
+  const systemInstruction = `Você é um Oficial Superior Especialista em Planejamento Estratégico, Orçamento Público e Captação de Recursos da Secretaria de Estado da Segurança Pública de Sergipe (SSP/SE).
+Sua missão é redigir o preenchimento técnico completo, coerente e de nível executivo do FORMULÁRIO DE PROPOSTA DE PROJETO (FPP), conforme a Portaria SSP nº 1998/2025, Lei nº 13.756/2018 (FNSP) e Lei nº 14.133/2021.
 
-  const prompt = `Gere uma proposta de projeto completa do FPP para a Secretaria de Estado da Segurança Pública de Sergipe com base na seguinte solicitação:
+REGRAS DE COERÊNCIA E QUALIDADE:
+- Todas as seções devem derivar estritamente do objeto pedido na "Ideia Central", mantendo coerência entre título, objetivo, justificativa, público, metas, localização e itens orçamentários.
+- Nunca use frases genéricas desconexas (ex.: não cite "tempo de resposta de patrulha" se o projeto for reforma predial, hospitalar ou treinamento).
+- A resposta DEVE ser estritamente um objeto JSON válido (sem texto fora do JSON) contendo:
+  titulo, objetivoGeral, objetivosEspecificos, justificativa, publicoAlvoDireto, publicoAlvoIndireto, resultadosEsperados, metas, sustentabilidade, mensuracaoResultados, planoLocalizacao ([{ item, quantidade, endereco }]), materiaisServicos ([{ materialServico, descricaoSucinta, modeloMarcaReferencia, naturezaDespesa ("4.4.90" para investimento ou "3.3.90" para custeio), quantidade, valorUnitario, valorTotal }]), pesquisaPrecosObservacoes, implementacao.`;
+
+  const prompt = `Gere uma proposta de projeto completa e altamente detalhada para o FPP da SSP/SE com base em:
 Área Temática: ${areaDescMap[area]}
 Instituição: ${instituicao}
-Ideia Central da Aquisição: "${ideia}"
+Ideia Central da Solicitação: "${ideia}"
 
-Lembre-se de usar termos e municípios reais de Sergipe (ex.: Aracaju, Nossa Senhora do Socorro, Itabaiana, Lagarto, Estância, Tobias Barreto, Canindé de São Francisco, Simão Dias), órgãos reais (PMSE, SSP/SE, CEACRIM, CIOSP) e formato financeiro em Reais.`;
+Utilize referências reais de Sergipe (ex.: Aracaju, Nossa Senhora do Socorro, Itabaiana, Lagarto, Estância, Tobias Barreto, Canindé de São Francisco, HPM/SE, CEACRIM, CIOSP, DAL/PMSE) e valores realistas em Reais.`;
 
   let rawText = '';
   try {
-    rawText = await callGeminiApi(prompt, systemInstruction);
+    const result = await callGeminiWithCascade(prompt, systemInstruction);
+    rawText = result.text;
   } catch (apiErr: any) {
-    console.warn('API Gemini retornou erro de autenticação/proxy. Usando gerador especialista interno...', apiErr?.message);
-    // Provide intelligent offline generator based on user's exact idea & area
+    console.warn('Modelos Gemini indisponíveis, acionando gerador offline completo...', apiErr?.message);
+    emitAiModelNotice({
+      modelId: 'offline',
+      modelLabel: 'Modo Offline',
+      isOffline: true,
+      quotaExhausted: true,
+      quotaExhaustedModels: FREE_MODEL_CASCADE.map((m) => m.label),
+      message: 'Cota esgotada — carregando sugestão offline',
+      detail: 'Nenhuma cota gratuita disponível no momento; proposta estruturada localmente.',
+    });
     return generateOfflineProposal(ideia, area, instituicao);
   }
 
-  // Clean JSON response
   let jsonString = rawText.trim();
   if (jsonString.startsWith('```json')) {
     jsonString = jsonString.replace(/^```json/, '').replace(/```$/, '').trim();
@@ -216,66 +447,25 @@ Lembre-se de usar termos e municípios reais de Sergipe (ex.: Aracaju, Nossa Sen
   }
 }
 
-/**
- * Intelligent domain-specific generator that constructs complete SSP/SE proposals
- * customized with the user's exact input even when the cloud API key is unauthenticated.
- */
 function generateOfflineProposal(
   ideia: string,
   area: ThematicArea,
-  instituicao: string
+  _instituicao: string
 ): Partial<ProjectData> {
   const cleanIdea = ideia.trim();
   const title = `Projeto ${area}: ${cleanIdea.length > 70 ? cleanIdea.slice(0, 70) + '...' : cleanIdea}`;
 
-  if (area === 'MVI') {
-    return {
-      titulo: title,
-      objetivoGeral: `Fortalecer a atuação preventiva e repressiva qualificada na contenção de Mortes Violentas Intencionais (MVI) em Sergipe, mediante a aquisição e emprego de ${cleanIdea}, alinhando-se aos eixos da Portaria MJSP nº 685/2024 e Lei nº 13.756/2018 (Fundo Nacional de Segurança Pública).`,
-      objetivosEspecificos: `1. Executar a aquisição de ${cleanIdea} para emprego imediato nas operações policiais ostensivas;\n2. Intensificar o policiamento nas manchas criminais com maior incidência de homicídios e roubos violentos;\n3. Reduzir o tempo de resposta do atendimento emergencial às ocorrências graves;\n4. Proporcionar maior segurança e capacidade técnica de resposta ao efetivo operacional.`,
-      justificativa: `A incidência de crimes violentos letais intencionais exige permanente reaparelhamento das tropas operacionais da Segurança Pública. A intervenção proposta com a aquisição de "${cleanIdea}" soluciona a defasagem logística e amplia a saturação policial nas áreas de maior vulnerabilidade criminal identificadas pela Coordenadoria de Estatística e Análise Criminal da SSP/SE.`,
-      publicoAlvoDireto: '120 policiais militares e servidores da segurança pública diretamente escalados no policiamento ostensivo.',
-      publicoAlvoIndireto: 'Aproximadamente 85.000 habitantes dos municípios contemplados, beneficiados com a redução de delitos e preservação da vida.',
-      resultadosEsperados: '- Redução de pelo menos 15% nos índices de crimes violentos letais na área de atuação;\n- Elevação da taxa de apreensão de armas e substâncias ilícitas;\n- Aumento substancial da sensação de segurança da população.',
-      metas: '1. Colocar 100% dos bens adquiridos em operação no prazo de 60 dias após entrega;\n2. Reduzir em 15% os homicídios na mancha territorial atendida ao longo de 12 meses;\n3. Manter disponibilidade operacional dos equipamentos superior a 95%.',
-      sustentabilidade: 'Os bens possuem garantia do fabricante e integração aos contratos contínuos de manutenção da frota e logística da SSP/SE, com vida útil estimada conforme o Manual de Contabilidade Aplicado ao Setor Público (MCASP).',
-      mensuracaoResultados: 'Aferição mensal por meio dos Relatórios de Ocorrência Policial (ROP) e boletins da Coordenadoria de Estatística da SSP/SE, comparando o período anterior e posterior à implantação.',
-      planoLocalizacao: [
-        {
-          id: 'loc-off-1',
-          item: cleanIdea.slice(0, 40),
-          quantidade: 1,
-          endereco: 'Sede da Unidade Policial - Estado de Sergipe',
-        },
-      ],
-      materiaisServicos: [
-        {
-          id: 'mat-off-1',
-          materialServico: cleanIdea.slice(0, 40),
-          descricaoSucinta: `Aquisição de ${cleanIdea} em conformidade com as especificações técnicas da SSP/SE.`,
-          modeloMarcaReferencia: 'Padrão normatizado de referência',
-          naturezaDespesa: '4.4.90',
-          quantidade: 1,
-          valorUnitario: 150000.0,
-          valorTotal: 150000.0,
-        },
-      ],
-      pesquisaPrecosObservacoes: 'Pesquisa elaborada com base no Painel de Preços oficial do Governo e três cotações de fornecedores especializados (Portaria SSP 1998/2025).',
-      implementacao: 'Recebimento e tombamento patrimonial pela Diretoria de Apoio Logístico (DAL/PMSE), seguido de instrução de nivelamento técnico e imediata alocação nas escalas de serviço.',
-    };
-  }
-
   if (area === 'EVM') {
     return {
       titulo: title,
-      objetivoGeral: `Intensificar o enfrentamento e prevenção qualificada à violência doméstica e familiar contra a mulher no Estado de Sergipe, com ênfase na fiscalização rigorosa de Medidas Protetivas de Urgência através de ${cleanIdea}.`,
-      objetivosEspecificos: `1. Estruturar a capacidade de mobilidade e acolhimento humanizado para a Patrulha Maria da Penha com ${cleanIdea};\n2. Aumentar em 100% o número de visitas fiscalizatórias preventivas a mulheres sob medida protetiva;\n3. Agilizar o tempo de atendimento em casos de quebra de medidas protetivas e situação de flagrância;\n4. Qualificar o acolhimento não revitimizador das vítimas.`,
-      justificativa: `O ciclo da violência doméstica demanda respostas rápidas e monitoramento proativo para evitar o feminicídio. A implementação de "${cleanIdea}" dota a equipe policial dos meios necessários para prestar atendimento ágil, digno e protetivo às vítimas no interior do Estado.`,
-      publicoAlvoDireto: '30 policiais militares da Patrulha Maria da Penha e cerca de 450 mulheres sob acompanhamento judicial.',
-      publicoAlvoIndireto: 'Toda a comunidade feminina da região atendida (estimada em mais de 50.000 mulheres).',
-      resultadosEsperados: '- Reincidência nula de agressões graves entre as mulheres monitoradas pela guarnição especializada;\n- Cumprimento célere de 100% das decisões judiciais de medidas protetivas expedidas.',
-      metas: '1. Realizar no mínimo 80 visitas fiscalizatórias de medidas protetivas por mês;\n2. Iniciar a operação regular dos bens em até 45 dias do recebimento.',
-      sustentabilidade: 'Manutenção assegurada pelos contratos vigentes da Secretaria de Segurança Pública e dotação continuada do orçamento estadual.',
+      objetivoGeral: `Intensificar o enfrentamento e prevenção qualificada à violência doméstica e familiar contra a mulher no Estado de Sergipe, com ênfase na fiscalização de Medidas Protetivas de Urgência através de ${cleanIdea}.`,
+      objetivosEspecificos: `1. Estruturar a capacidade de acolhimento humanizado e mobilidade operacional com ${cleanIdea};\n2. Ampliar em 100% o número de visitas fiscalizatórias preventivas a mulheres sob medida protetiva;\n3. Qualificar o atendimento não revitimizador das vítimas em articulação com a rede estadual de proteção.`,
+      justificativa: `A violência doméstica demanda intervenção célere, especializada e contínua para interromper o ciclo de agressões e prevenir o feminicídio. A implementação de "${cleanIdea}" dota a unidade dos meios adequados para assegurar o cumprimento das decisões judiciais e proteger as vítimas em Sergipe.`,
+      publicoAlvoDireto: '30 profissionais da Patrulha Maria da Penha e cerca de 450 mulheres sob acompanhamento judicial.',
+      publicoAlvoIndireto: 'População feminina da região atendida (estimada em mais de 50.000 mulheres).',
+      resultadosEsperados: '- Redução drástica da reincidência de agressões graves entre mulheres monitoradas;\n- Cumprimento célere de 100% das medidas protetivas expedidas.',
+      metas: '1. Realizar no mínimo 80 visitas fiscalizatórias mensais;\n2. Colocar os meios em operação regular em até 45 dias após o recebimento.',
+      sustentabilidade: 'Manutenção assegurada pelos contratos corporativos contínuos da Secretaria de Segurança Pública de Sergipe.',
       mensuracaoResultados: 'Acompanhamento integrado com relatórios da Coordenadoria da Mulher da SSP/SE e dados do Tribunal de Justiça de Sergipe.',
       planoLocalizacao: [
         {
@@ -289,255 +479,418 @@ function generateOfflineProposal(
         {
           id: 'mat-evm-off-1',
           materialServico: cleanIdea.slice(0, 40),
-          descricaoSucinta: `Itens de acolhimento e patrulhamento: ${cleanIdea}`,
-          modeloMarcaReferencia: 'Especificação técnica para proteção à mulher',
+          descricaoSucinta: `Objeto especificado: ${cleanIdea}`,
+          modeloMarcaReferencia: 'Padrão normatizado SSP/SE',
           naturezaDespesa: '4.4.90',
           quantidade: 1,
           valorUnitario: 95000.0,
           valorTotal: 95000.0,
         },
       ],
-      pesquisaPrecosObservacoes: 'Pesquisa realizada com base em atas públicas similares e três orçamentos comerciais não discrepantes.',
-      implementacao: 'Instalação e distribuição dos itens em 30 dias, capacitação da guarnição em acolhimento especializado e articulação com a rede de proteção local.',
+      pesquisaPrecosObservacoes: 'Pesquisa realizada com base em atas públicas vigentes e três cotações mercadológicas (Art. 5º da Portaria SSP nº 1998/2025).',
+      implementacao: 'Recebimento técnico, tombamento patrimonial e capacitação da equipe especializada em até 30 dias.',
     };
   }
 
-  // MQV
+  if (area === 'MQV') {
+    return {
+      titulo: title,
+      objetivoGeral: `Promover a melhoria das condições de trabalho, saúde biopsicossocial, salubridade e qualidade de vida dos profissionais de segurança pública através de ${cleanIdea}, nos termos da Portaria SSP nº 1998/2025.`,
+      objetivosEspecificos: `1. Implantar e disponibilizar ${cleanIdea} conforme normas técnicas vigentes;\n2. Reduzir fatores de estresse ocupacional e agravos físicos ou mentais no efetivo;\n3. Melhorar a infraestrutura assistencial e operacional voltada aos profissionais de segurança pública.`,
+      justificativa: `A atividade de segurança pública impõe elevada sobrecarga física e emocional. A execução de "${cleanIdea}" atua diretamente na prevenção de agravos à saúde e na valorização dos servidores, reduzindo afastamentos e elevando a qualidade dos serviços prestados à população sergipana.`,
+      publicoAlvoDireto: '150 profissionais de segurança pública e colaboradores diretamente beneficiados.',
+      publicoAlvoIndireto: 'Dependentes dos servidores e a comunidade atendida em todo o Estado de Sergipe.',
+      resultadosEsperados: '- Redução de pelo menos 25% nos afastamentos médicos relacionados no período de 12 meses;\n- Elevação da capacidade e qualidade estrutural da unidade.',
+      metas: '1. Concluir 100% da implantação em até 60 dias após recebimento/contratação;\n2. Alcançar atendimento ou adesão de pelo menos 70% do público-alvo previsto no primeiro semestre.',
+      sustentabilidade: 'Manutenção preventiva absorvida pela dotação continuada da PMSE/SSP-SE, com vida útil superior a 8 anos.',
+      mensuracaoResultados: 'Relatórios periódicos da Formação Sanitária, HPM/SE e Núcleo de Saúde Ocupacional comparando indicadores antes e após a implantação.',
+      planoLocalizacao: [
+        {
+          id: 'loc-mqv-off-1',
+          item: cleanIdea.slice(0, 40),
+          quantidade: 1,
+          endereco: 'Instalações da Unidade Policial / Saúde - Sergipe',
+        },
+      ],
+      materiaisServicos: [
+        {
+          id: 'mat-mqv-off-1',
+          materialServico: cleanIdea.slice(0, 40),
+          descricaoSucinta: `Conjunto técnico para qualidade de vida e infraestrutura: ${cleanIdea}`,
+          modeloMarcaReferencia: 'Linha profissional normatizada',
+          naturezaDespesa: '4.4.90',
+          quantidade: 1,
+          valorUnitario: 85000.0,
+          valorTotal: 85000.0,
+        },
+      ],
+      pesquisaPrecosObservacoes: 'Pesquisa de preços balizada em atas vigentes, Painel de Preços e três orçamentos formais (Art. 5º da Portaria SSP nº 1998/2025).',
+      implementacao: 'Contratação, execução/instalação em até 45 dias e entrega formal com regulamento de uso e manutenção.',
+    };
+  }
+
   return {
     titulo: title,
-    objetivoGeral: `Promover a melhoria das condições de trabalho, saúde biopsicossocial, salubridade e qualidade de vida dos profissionais de segurança pública através de ${cleanIdea}, nos termos da Portaria SSP nº 1998/2025.`,
-    objetivosEspecificos: `1. Implantar e disponibilizar ${cleanIdea} para uso regular do efetivo policial;\n2. Reduzir os fatores de estresse ocupacional, lesões osteomusculares e fadiga crônica dos profissionais de plantão;\n3. Fomentar hábitos saudáveis e preparação física continuada na unidade policial;\n4. Adequar a infraestrutura de repouso e permanência aos padrões de ergonomia.`,
-    justificativa: `A atividade de segurança pública envolve sobrecarga física e estresse contínuo. A disponibilização de "${cleanIdea}" atua diretamente na prevenção de agravos à saúde, reduzindo afastamentos médicos e promovendo a valorização dos policiais que servem à sociedade.`,
-    publicoAlvoDireto: '150 policiais militares e servidores lotados na respectiva Organização Policial Militar.',
-    publicoAlvoIndireto: 'A comunidade atendida, que conta com servidores fisicamente preparados e motivados.',
-    resultadosEsperados: '- Redução de pelo menos 25% no número de atestados médicos por estresse e dores lombares no período de 12 meses;\n- Melhora sensível no clima organizacional e na disposição para o serviço operacional.',
-    metas: '1. Concluir a instalação e disponibilização dos bens em até 45 dias do recebimento;\n2. Alcançar a participação regular de pelo menos 65% do efetivo nas práticas saudáveis.',
-    sustentabilidade: 'Equipamentos de alta durabilidade com vida útil superior a 8 anos. Manutenção periódica preventiva realizada pelo setor de infraestrutura.',
-    mensuracaoResultados: 'Relatórios semestrais da Formação Sanitária e do Núcleo de Saúde Ocupacional comparando taxas de afastamento antes e após a implantação.',
+    objetivoGeral: `Fortalecer a capacidade operacional e estrutural na contenção de Mortes Violentas Intencionais (MVI) em Sergipe mediante ${cleanIdea}, alinhando-se à Portaria MJSP nº 685/2024 e Lei nº 13.756/2018.`,
+    objetivosEspecificos: `1. Viabilizar integralmente ${cleanIdea} conforme especificações técnicas da SSP/SE;\n2. Capacitar o efetivo responsável para o emprego eficiente e seguro dos meios;\n3. Ampliar a efetividade operacional nas áreas prioritárias definidas pela CEACRIM/SSP.`,
+    justificativa: `O enfrentamento aos crimes violentos demanda suporte técnico, logístico e capacitação contínua. A iniciativa "${cleanIdea}" resolve gargalos identificados na unidade proponente e eleva o padrão de proteção à sociedade sergipana.`,
+    publicoAlvoDireto: '120 profissionais de segurança pública diretamente envolvidos na execução e uso dos meios.',
+    publicoAlvoIndireto: 'População estimada de 85.000 habitantes na circunscrição atendida em Sergipe.',
+    resultadosEsperados: '- Elevação da prontidão técnica e da segurança operacional do efetivo;\n- Impacto positivo mensurável nos indicadores da área temática.',
+    metas: '1. Concluir 100% da implantação no prazo de 60 dias após entrega;\n2. Garantir operacionalidade superior a 95% durante o primeiro ano.',
+    sustentabilidade: 'Integração aos contratos de manutenção e logística da SSP/SE com observância às normas do MCASP.',
+    mensuracaoResultados: 'Aferição mensal via Relatórios de Ocorrência Policial (ROP) e estatísticas consolidadas pela CEACRIM/SSP-SE.',
     planoLocalizacao: [
       {
-        id: 'loc-mqv-off-1',
+        id: 'loc-off-1',
         item: cleanIdea.slice(0, 40),
         quantidade: 1,
-        endereco: 'Instalações da Sede Policial Militar - Sergipe',
+        endereco: 'Sede da Unidade Policial - Estado de Sergipe',
       },
     ],
     materiaisServicos: [
       {
-        id: 'mat-mqv-off-1',
+        id: 'mat-off-1',
         materialServico: cleanIdea.slice(0, 40),
-        descricaoSucinta: `Conjunto para qualidade de vida e saúde: ${cleanIdea}`,
-        modeloMarcaReferencia: 'Linha profissional normatizada',
+        descricaoSucinta: `Especificação técnica para ${cleanIdea} em conformidade com a SSP/SE.`,
+        modeloMarcaReferencia: 'Padrão normatizado de referência',
         naturezaDespesa: '4.4.90',
         quantidade: 1,
-        valorUnitario: 75000.0,
-        valorTotal: 75000.0,
+        valorUnitario: 150000.0,
+        valorTotal: 150000.0,
       },
     ],
-    pesquisaPrecosObservacoes: 'Pesquisa de preços balizada no Banco de Preços e cotações de empresas fornecedoras do setor.',
-    implementacao: 'Montagem dos aparelhos e adequação do espaço em 20 dias, com publicação de Portaria com escala e regulamento de uso.',
+    pesquisaPrecosObservacoes: 'Pesquisa elaborada no Painel de Preços oficial e três cotações válidas (Art. 5º da Portaria SSP nº 1998/2025).',
+    implementacao: 'Recebimento técnico, tombamento patrimonial pela DAL/PMSE e entrada em operação imediata após nivelamento.',
   };
 }
 
 /**
- * Improves or suggests content for an individual section of the FPP
- * strictly based on all other fields the user has already filled in!
+ * Suggests professional, context-aware content for an individual section of the FPP.
+ * Returns both the suggested text and metadata about which model generated it.
  */
 export async function suggestFieldImprovement(
   fieldKey: string,
   fieldLabel: string,
   currentValue: string,
-  projectContext: Partial<ProjectData>,
-  instructionType: 'enrich' | 'more_technical' | 'add_metrics' | 'legal_framework' | 'from_context'
-): Promise<string> {
-  const instructions: Record<string, string> = {
-    from_context: 'Analise cuidadosamente tudo o que o usuário já preencheu até o momento no projeto e redija este campo de forma estritamente alinhada, coerente e complementar aos demais dados já preenchidos.',
-    enrich: 'Torne o texto mais completo, detalhado e persuasivo para captação de recursos públicos, respeitando estritamente o objeto e contexto preenchido pelo usuário.',
-    more_technical: 'Reescreva utilizando vocabulário técnico formal da Segurança Pública do Estado de Sergipe e doutrina operacional policial militar.',
-    add_metrics: 'Adicione metas quantitativas mensuráveis, prazos em dias/meses, percentuais e estimativas numéricas compatíveis com os itens e valores preenchidos.',
-    legal_framework: 'Harmonize o texto com os artigos da Portaria SSP nº 1998/2025, Portaria MJSP nº 685/2024 e Lei nº 13.756/2018 (Fundo Nacional de Segurança Pública).',
+  projectContext: Partial<ProjectData>
+): Promise<AiGenerationResult> {
+  const fullContext = buildComprehensiveProjectContext(projectContext, fieldKey);
+
+  const fieldSpecificGuidance: Record<string, string> = {
+    titulo:
+      'Redija um título institucional claro, preciso e autoexplicativo (1 frase), identificando o objeto principal, a unidade beneficiada (se informada) e o propósito central.',
+    objetivoGeral:
+      'Redija 1 parágrafo robusto iniciando com verbo no infinitivo, conectando exatamente o objeto do projeto (ex.: reforma predial, hospital, estande, viaturas, equipamentos) ao benefício final e ao alinhamento legal (Portaria SSP nº 1998/2025 e Lei nº 13.756/2018 quando aplicável).',
+    objetivosEspecificos:
+      'Elabore uma lista numerada de 3 a 5 objetivos específicos concretos, verificáveis e estritamente coerentes com o título, materiais e natureza do objeto.',
+    justificativa:
+      'Redija de 2 a 3 parágrafos técnicos estruturados em: (1) diagnóstico do problema atual ou carência estrutural/operacional na unidade de Sergipe; (2) como o objeto e os itens propostos resolvem esse gargalo; e (3) impacto institucional e social esperado.',
+    publicoAlvoDireto:
+      'Especifique com clareza os beneficiários imediatos (servidores, policiais, profissionais de saúde ou usuários diretos da unidade), com estimativa numérica coerente.',
+    publicoAlvoIndireto:
+      'Especifique os beneficiários mediatos (população do município/região em Sergipe, dependentes de servidores ou comunidade atendida), com estimativa numérica realista.',
+    resultadosEsperados:
+      'Liste de 3 a 4 resultados e impactos concretos em tópicos ("- ..."), usando indicadores reais ligados ao domínio do projeto.',
+    metas:
+      'Redija 3 metas numeradas no padrão SMART (específicas, mensuráveis, com percentuais e prazos em dias/meses compatíveis com os itens do projeto).',
+    sustentabilidade:
+      'Explique como o projeto se mantém após a entrega: garantia técnica, contratos corporativos de manutenção da SSP/SE ou PMSE, vida útil estimada segundo o MCASP e custeio continuado.',
+    mensuracaoResultados:
+      'Indique instrumentos objetivos de verificação compatíveis com o objeto (ex.: relatórios da CEACRIM/SSP, ROPs, prontuários/indicadores assistenciais do HPM, laudos de engenharia/entrega, pesquisas ou registros de frequência).',
+    pesquisaPrecosObservacoes:
+      'Fundamente a formação dos preços conforme o Art. 5º da Portaria SSP nº 1998/2025 e Lei nº 14.133/2021 (Painel de Preços, atas de SRP vigentes, SINAPI para obras/reformas quando aplicável e no mínimo 3 cotações válidas).',
+    implementacao:
+      'Apresente um cronograma lógico numerado por etapas após a aprovação/liberação dos recursos, com prazos em dias (contratação/recebimento, inspeção/obra, tombamento na DAL/PMSE, capacitação e entrega operacional).',
   };
 
-  // Compile full user context from whatever fields the user has filled so far
-  const contextParts: string[] = [];
-  if (projectContext.areaTematica) contextParts.push(`Área Temática: ${projectContext.areaTematica}`);
-  if (projectContext.titulo?.trim()) contextParts.push(`Título do Projeto: "${projectContext.titulo.trim()}"`);
-  if (projectContext.instituicao?.trim()) contextParts.push(`Instituição: ${projectContext.instituicao.trim()}`);
-  if (projectContext.lotacao?.trim()) contextParts.push(`Lotação / Unidade / OPM: ${projectContext.lotacao.trim()}`);
-  if (projectContext.responsavelTecnico?.trim()) contextParts.push(`Responsável Técnico: ${projectContext.responsavelTecnico.trim()}`);
+  const systemPrompt = `Você é um Coronel Especialista em Planejamento Estratégico, Elaboração de Projetos Públicos e Captação de Recursos da Secretaria de Estado da Segurança Pública de Sergipe (SSP/SE).
+Sua função é redigir o conteúdo técnico oficial para o campo "${fieldLabel}" do FORMULÁRIO DE PROPOSTA DE PROJETO (FPP), segundo a Portaria SSP nº 1998/2025.
 
-  if (fieldKey !== 'objetivoGeral' && projectContext.objetivoGeral?.trim()) {
-    contextParts.push(`Objetivo Geral já definido: "${projectContext.objetivoGeral.trim()}"`);
-  }
-  if (fieldKey !== 'objetivosEspecificos' && projectContext.objetivosEspecificos?.trim()) {
-    contextParts.push(`Objetivos Específicos já definidos:\n${projectContext.objetivosEspecificos.trim()}`);
-  }
-  if (fieldKey !== 'justificativa' && projectContext.justificativa?.trim()) {
-    contextParts.push(`Justificativa já definida:\n${projectContext.justificativa.trim()}`);
-  }
-  if (fieldKey !== 'publicoAlvoDireto' && (projectContext.publicoAlvoDireto?.trim() || projectContext.publicoAlvoIndireto?.trim())) {
-    contextParts.push(`Público-Alvo já definido: Direto: ${projectContext.publicoAlvoDireto || '-'} | Indireto: ${projectContext.publicoAlvoIndireto || '-'}`);
-  }
+PRINCÍPIOS INEGOCIÁVEIS DE QUALIDADE:
+1. FIDELIDADE TOTAL À INTENÇÃO DO PROJETO: Leia todo o contexto preenchido abaixo (Título, Lotação, Materiais/Serviços, Objetivos e Justificativa já escritos). Tudo o que você redigir deve derivar diretamente desse objeto real.
+   - Projeto de reforma, obra ou hospital/HPM: trate de engenharia, infraestrutura predial, adequação às normas sanitárias/acessibilidade, ampliação da capacidade de atendimento e salubridade.
+   - Projeto de estande de tiro, armamento ou instrução: trate de capacitação técnica, segurança no uso progressivo da força, precisão e redução de incidentes.
+   - Projeto de viaturas, motos ou rádio: trate de mobilidade tática, cobertura territorial, saturação de manchas criminais e pronta resposta.
+   - Projeto de saúde ocupacional, academia ou climatização: trate de ergonomia, bem-estar, prevenção de afastamentos e longevidade funcional.
+   - PROIBIDO misturar domínios ou inserir clichês incompatíveis com o objeto.
+2. RIGOR TÉCNICO, LEGAL E QUANTITATIVO: Integre naturalmente, quando fizer sentido para o campo, métricas objetivas, prazos realistas, vocabulário administrativo-militar formal e fundamentação normativa da SSP/SE e Lei nº 14.133/2021.
+3. COERÊNCIA COM DADOS EXISTENTES: Se o usuário já iniciou um rascunho neste campo, preserve e eleve a ideia dele para nível executivo; se estiver vazio, crie uma redação original completa.
+4. SAÍDA LIMPA: Retorne exclusivamente o texto pronto para ser inserido no formulário oficial, sem saudações, explicações ou markdown desnecessário.`;
 
-  // Include materials & services filled by the user
-  const filledMaterials = (projectContext.materiaisServicos || []).filter(
-    (m) => m.materialServico && m.materialServico.trim() !== ''
-  );
-  if (filledMaterials.length > 0) {
-    const matList = filledMaterials
-      .map((m) => `- ${m.quantidade}x ${m.materialServico} (${m.modeloMarcaReferencia || 'Ref'}), Total: R$ ${m.valorTotal || m.quantidade * m.valorUnitario}`)
-      .join('\n');
-    contextParts.push(`Itens e Materiais Orçados pelo Usuário:\n${matList}`);
-  }
+  const prompt = `CONTEXTO INTEGRAL DA PROPOSTA EM ELABORAÇÃO:
+${fullContext || 'Área Temática Selecionada: ' + (projectContext.areaTematica || 'MVI')}
 
-  // Include other sections if filled
-  if (fieldKey !== 'metas' && projectContext.metas?.trim()) {
-    contextParts.push(`Metas já definidas: "${projectContext.metas.trim()}"`);
-  }
-  if (fieldKey !== 'sustentabilidade' && projectContext.sustentabilidade?.trim()) {
-    contextParts.push(`Sustentabilidade já definida: "${projectContext.sustentabilidade.trim()}"`);
-  }
-  if (fieldKey !== 'mensuracaoResultados' && projectContext.mensuracaoResultados?.trim()) {
-    contextParts.push(`Mensuração já definida: "${projectContext.mensuracaoResultados.trim()}"`);
-  }
+CAMPO A REDIGIR AGORA: ${fieldLabel}
+ORIENTAÇÃO ESPECÍFICA DO CAMPO: ${fieldSpecificGuidance[fieldKey] || 'Redija texto técnico formal, claro e coerente com os demais dados.'}
 
-  const systemPrompt = `Você é um Coronel Especialista em Planejamento Estratégico e Captação de Recursos da Secretaria de Estado da Segurança Pública de Sergipe (SSP/SE), com vasta experiência em gestão de infraestrutura, logística e saúde pública.
-
-Sua missão é redigir o conteúdo técnico para o campo "${fieldLabel}" do FORMULÁRIO DE PROPOSTA DE PROJETO (FPP), conforme a Portaria SSP nº 1998/2025.
-
-DIRETRIZES DE ALTA QUALIDADE (Obrigatórias):
-1. INTENCIONALIDADE E DOMÍNIO: Sua sugestão deve entender o PROPÓSITO REAL do projeto. 
-   - Se o projeto for sobre "Reforma", "Obra" ou "Construção": Foque em modernização, adequação técnica, ampliação de capacidade e conformidade com normas. Exemplo: "Reformar as instalações do hospital da policia modernizando o prédio para expandir os atendimentos".
-   - Se o projeto for sobre "Hospital", "HPM" ou "Saúde": Foque em expansão assistencial e valorização da vida.
-   - Se o projeto for sobre "Treinamento" ou "Tiro": Foque em precisão e segurança técnica.
-   - Se o projeto for sobre "Viatura": Foque em mobilidade e pronta resposta.
-2. FUJA DO GENÉRICO: NUNCA use "reduzir tempo de resposta" se o objeto for hospitalar ou de infraestrutura física. Seja específico ao domínio.
-3. CONTEXTO SERGIPE: Use nomes de batalhões (ex: 1º BPM, 3º BPM, HPM/SE, CEACRIM) e cidades reais.
-4. ESTILO DOUTRINÁRIO: Use linguagem formal e persuasiva.
-5. RESPOSTA DIRETA: Responda apenas com o texto sugerido.`;
-
-  const prompt = `DADOS DO PROJETO EM ELABORAÇÃO (CONTEXTO):
-${contextParts.length > 0 ? contextParts.join('\n\n') : 'Área Temática Selecionada: ' + (projectContext.areaTematica || 'MVI')}
-
-CAMPO A SER PREENCHIDO AGORA: ${fieldLabel}
-RASCUNHO ATUAL DO USUÁRIO:
-"${currentValue && currentValue.trim() ? currentValue.trim() : '(Vazio - elabore uma sugestão técnica original e pertinente ao objeto e materiais listados acima)'}"
-
-TIPO DE APRIMORAMENTO: ${instructions[instructionType] || instructions.from_context}
-
-INSTRUÇÃO ADICIONAL: Certifique-se de que a sugestão faça sentido direto com os itens e o título informados. Se o título é "Reforma do HPM", o objetivo deve ser sobre infraestrutura hospitalar e modernização do prédio.`;
+RASCUNHO ATUAL DIGITADO PELO USUÁRIO:
+"${currentValue && currentValue.trim() ? currentValue.trim() : '(Campo vazio — elabore redação técnica completa e alinhada ao contexto acima)'}"`;
 
   try {
-    return await callGeminiApi(prompt, systemPrompt);
+    return await callGeminiWithCascade(prompt, systemPrompt);
   } catch (apiErr: any) {
-    console.warn('API Gemini indisponível ou chave inválida, gerando sugestão técnica inteligente offline...', apiErr?.message);
-    return generateOfflineFieldSuggestion(fieldKey, fieldLabel, currentValue, projectContext, instructionType);
+    console.warn('Modelos Gemini indisponíveis, acionando sugestão offline contextual...', apiErr?.message);
+    const offlineText = generateOfflineFieldSuggestion(fieldKey, currentValue, projectContext);
+    emitAiModelNotice({
+      modelId: 'offline',
+      modelLabel: 'Modo Offline',
+      isOffline: true,
+      quotaExhausted: true,
+      quotaExhaustedModels: FREE_MODEL_CASCADE.map((m) => m.label),
+      message: 'Cota esgotada — carregando sugestão offline',
+      detail: 'Cotas gratuitas da API esgotadas ou chave ausente; sugestão gerada pelo motor contextual local.',
+    });
+    return {
+      text: offlineText,
+      modelId: 'offline',
+      modelLabel: 'Sugestão Offline',
+      isOffline: true,
+      quotaExhaustedModels: FREE_MODEL_CASCADE.map((m) => m.label),
+    };
   }
 }
 
-/**
- * Heuristic contextual field suggestion generator when offline or invalid key.
- * Now improved with more keywords (Hospital, Reform, Infrastructure).
- */
 function generateOfflineFieldSuggestion(
   fieldKey: string,
-  fieldLabel: string,
   currentValue: string,
-  ctx: Partial<ProjectData>,
-  type: string
+  ctx: Partial<ProjectData>
 ): string {
-  const title = (ctx.titulo || '').toLowerCase();
-  const lotacao = ctx.lotacao?.trim() || 'Unidade Policial';
+  const titleRaw = (ctx.titulo || '').trim();
+  const title = titleRaw.toLowerCase();
+  const lotacao = ctx.lotacao?.trim() || 'unidade proponente da PMSE/SSP-SE';
   const area = ctx.areaTematica || 'MVI';
   const draft = currentValue?.trim() || '';
+  const filledMaterials = (ctx.materiaisServicos || [])
+    .map((m) => m.materialServico?.trim())
+    .filter(Boolean) as string[];
+  const materialsSummary =
+    filledMaterials.length > 0
+      ? filledMaterials.slice(0, 3).join(', ')
+      : titleRaw || 'os itens e serviços especificados na proposta';
+  const combinedText = `${title} ${filledMaterials.join(' ').toLowerCase()} ${(ctx.objetivoGeral || '').toLowerCase()}`;
 
-  // Keyword Detection for specialized logic
-  const isTiro = title.includes('tiro') || title.includes('estande') || title.includes('treinamento') || title.includes('instrutor');
-  const isViatura = title.includes('viatura') || title.includes('carro') || title.includes('pick-up') || title.includes('veículo');
-  const isArma = title.includes('arma') || title.includes('pistola') || title.includes('fuzil') || title.includes('bélico');
-  const isMulher = area === 'EVM' || title.includes('mulher') || title.includes('penha') || title.includes('lilás');
-  const isSaude = area === 'MQV' || title.includes('saúde') || title.includes('academia') || title.includes('clima') || title.includes('ergonomia');
-  const isReforma = title.includes('reforma') || title.includes('obra') || title.includes('construção') || title.includes('prédio') || title.includes('instalações') || title.includes('adequação');
-  const isHospital = title.includes('hospital') || title.includes('hpm') || title.includes('médico') || title.includes('clínica') || title.includes('ambulatorio') || title.includes('saúde');
+  const isHospital =
+    combinedText.includes('hospital') ||
+    combinedText.includes('hpm') ||
+    combinedText.includes('médic') ||
+    combinedText.includes('clínica') ||
+    combinedText.includes('ambulatór') ||
+    combinedText.includes('enferm') ||
+    combinedText.includes('leito');
+  const isReforma =
+    combinedText.includes('reforma') ||
+    combinedText.includes('obra') ||
+    combinedText.includes('construção') ||
+    combinedText.includes('prédio') ||
+    combinedText.includes('instalações') ||
+    combinedText.includes('adequação') ||
+    combinedText.includes('telhado') ||
+    combinedText.includes('estrutura');
+  const isTiro =
+    combinedText.includes('tiro') ||
+    combinedText.includes('estande') ||
+    combinedText.includes('treinamento') ||
+    combinedText.includes('instrutor') ||
+    combinedText.includes('munição');
+  const isViatura =
+    combinedText.includes('viatura') ||
+    combinedText.includes('carro') ||
+    combinedText.includes('pick-up') ||
+    combinedText.includes('veículo') ||
+    combinedText.includes('moto');
+  const isArma =
+    combinedText.includes('arma') ||
+    combinedText.includes('pistola') ||
+    combinedText.includes('fuzil') ||
+    combinedText.includes('bélico') ||
+    combinedText.includes('colete');
+  const isMulher =
+    area === 'EVM' ||
+    combinedText.includes('mulher') ||
+    combinedText.includes('penha') ||
+    combinedText.includes('lilás');
+  const isSaude =
+    area === 'MQV' ||
+    combinedText.includes('saúde') ||
+    combinedText.includes('academia') ||
+    combinedText.includes('musculação') ||
+    combinedText.includes('clima') ||
+    combinedText.includes('ergonomia');
+
+  if (fieldKey === 'titulo') {
+    if (isHospital && isReforma) {
+      return `Reforma, Modernização Predial e Adequação Técnica das Instalações do Hospital da Polícia Militar (${lotacao})`;
+    }
+    if (isHospital) {
+      return `Modernização Tecnológica e Ampliação dos Serviços Médico-Hospitalares do HPM (${lotacao})`;
+    }
+    if (isReforma) {
+      return `Reforma Estrutural e Modernização das Instalações Físicas da ${lotacao}`;
+    }
+    if (isTiro) {
+      return `Implantação e Modernização de Estande de Tiro para Capacitação Técnica da ${lotacao}`;
+    }
+    if (isViatura) {
+      return `Aquisição de Viaturas Operacionais para Fortalecimento do Policiamento Ostensivo da ${lotacao}`;
+    }
+    if (isArma) {
+      return `Reaparelhamento Bélico e Proteção Individual do Efetivo da ${lotacao}`;
+    }
+    if (isMulher) {
+      return `Fortalecimento da Patrulha Maria da Penha e Rede de Acolhimento à Mulher (${lotacao})`;
+    }
+    if (isSaude) {
+      return `Promoção da Saúde Ocupacional e Adequação Ergonômica para Qualidade de Vida na ${lotacao}`;
+    }
+    if (filledMaterials.length > 0) {
+      return `Aquisição de ${materialsSummary} para Fortalecimento Operacional da ${lotacao}`;
+    }
+    return `Modernização Estrutural e Logística da ${lotacao} no âmbito da Portaria SSP nº 1998/2025`;
+  }
 
   if (fieldKey === 'objetivoGeral') {
-    if (isHospital && isReforma) return `Modernizar e adequar a infraestrutura física das instalações do ${lotacao} (HPM/SE), visando expandir a capacidade de atendimento, garantir a salubridade das alas médicas e proporcionar excelência assistencial aos profissionais de segurança pública e seus dependentes.`;
-    if (isHospital) return `Elevar a qualidade dos serviços médico-hospitalares prestados pelo ${lotacao}, por meio da aquisição de equipamentos de ponta e modernização técnica dos processos assistenciais.`;
-    if (isReforma) return `Realizar a reforma e adequação estrutural das instalações da ${lotacao}, corrigindo falhas de infraestrutura, garantindo acessibilidade e modernizando o ambiente de trabalho para melhor servir à sociedade.`;
-    if (isTiro) return `Aperfeiçoar o treinamento técnico-operacional de tiro policial dos servidores da ${lotacao} mediante a implantação de estande de tiro moderno e seguro, visando a excelência no uso progressivo da força.`;
-    if (isViatura) return `Fortalecer o patrulhamento preventivo e a capacidade de pronta resposta da ${lotacao} por meio da aquisição de viaturas operacionais caracterizadas, garantindo a saturação de áreas críticas.`;
-    if (isArma) return `Modernizar o arsenal bélico da ${lotacao} com armamento de última geração, garantindo segurança jurídica e operacional aos policiais militares no exercício de suas funções.`;
-    if (isMulher) return `Intensificar o enfrentamento à violência doméstica em Sergipe através da estruturação de meios para fiscalização de medidas protetivas e acolhimento especializado às vítimas no âmbito da ${lotacao}.`;
-    if (isSaude) return `Proporcionar melhores condições de salubridade, saúde física e mental aos profissionais de segurança pública da ${lotacao}, fomentando a valorização profissional.`;
-    
+    if (isHospital && isReforma) {
+      return `Reformar e modernizar as instalações físicas do ${lotacao}, adequando os ambientes assistenciais às normas sanitárias e estruturais vigentes para expandir a capacidade e a qualidade dos atendimentos médicos prestados aos profissionais de segurança pública e seus dependentes, em conformidade com a Portaria SSP nº 1998/2025.`;
+    }
+    if (isHospital) {
+      return `Modernizar o parque tecnológico e assistencial do ${lotacao} mediante a incorporação de ${materialsSummary}, ampliando a resolutividade clínica e a qualidade do atendimento médico-hospitalar em Sergipe.`;
+    }
+    if (isReforma) {
+      return `Executar a reforma e revitalização estrutural das instalações da ${lotacao}, assegurando condições adequadas de salubridade, acessibilidade, segurança predial e eficiência administrativa e operacional.`;
+    }
+    if (isTiro) {
+      return `Aperfeiçoar a capacitação técnico-profissional em armamento e tiro policial do efetivo da ${lotacao} por meio da implantação de ${materialsSummary}, promovendo a precisão técnica, a segurança nas instruções e o uso legítimo e proporcional da força.`;
+    }
+    if (isViatura) {
+      return `Fortalecer o policiamento ostensivo preventivo e a pronta resposta nas manchas criminais atendidas pela ${lotacao} mediante a incorporação de ${materialsSummary}, contribuindo para a redução das Mortes Violentas Intencionais (MVI) conforme a Portaria MJSP nº 685/2024.`;
+    }
+    if (isArma) {
+      return `Modernizar os meios de defesa e proteção individual dos servidores da ${lotacao} mediante a aquisição de ${materialsSummary}, elevando a segurança operacional e a confiabilidade técnica nas ações de segurança pública.`;
+    }
+    if (isMulher) {
+      return `Ampliar o enfrentamento à violência doméstica e a fiscalização de Medidas Protetivas de Urgência na área da ${lotacao} por meio de ${materialsSummary}, assegurando atendimento humanizado e proteção efetiva às mulheres em situação de vulnerabilidade.`;
+    }
+    if (isSaude) {
+      return `Promover a saúde física e mental, a ergonomia e a melhoria das condições de trabalho dos profissionais da ${lotacao} mediante a disponibilização de ${materialsSummary}, nos termos da Portaria SSP nº 1998/2025.`;
+    }
+    if (titleRaw) {
+      return `Viabilizar a execução do projeto "${titleRaw}" na ${lotacao} mediante a implementação de ${materialsSummary}, fortalecendo a eficiência institucional e o atendimento à sociedade sergipana conforme a Portaria SSP nº 1998/2025.`;
+    }
     return draft
-      ? `${draft} — em conformidade com as diretrizes da Portaria SSP nº 1998/2025 e do Fundo Nacional de Segurança Pública.`
-      : `Promover o fortalecimento e reaparelhamento da ${lotacao} visando otimizar a prestação do serviço de segurança pública no Estado de Sergipe.`;
+      ? `${draft} — alinhado às diretrizes da Portaria SSP nº 1998/2025.`
+      : `Fortalecer a infraestrutura e a capacidade de atendimento da ${lotacao} mediante a execução dos itens previstos nesta proposta, em conformidade com a Portaria SSP nº 1998/2025.`;
   }
 
   if (fieldKey === 'objetivosEspecificos') {
-    if (isHospital && isReforma) return `1. Reformar as alas de internamento e pronto-socorro do hospital;\n2. Modernizar a rede elétrica e hidráulica para suporte a novos equipamentos médicos;\n3. Expandir a capacidade de atendimentos em 30% após a conclusão da obra;\n4. Adequar as instalações às normas de vigilância sanitária vigentes.`;
-    if (isHospital) return `1. Adquirir equipamentos médicos modernos para triagem e diagnóstico;\n2. Capacitar a equipe de saúde no uso das novas tecnologias assistenciais;\n3. Reduzir o tempo de espera para cirurgias eletivas e consultas especializadas.`;
-    if (isReforma) return `1. Executar a reforma do telhado e das fachadas da unidade;\n2. Implantar sistema de climatização em 100% das áreas administrativas e operacionais;\n3. Adequar os sanitários e acessos para plena acessibilidade (NBR 9050).`;
-    if (isTiro) return `1. Implantar estrutura de estande de tiro com isolamento acústico e para-balas conforme normas de segurança;\n2. Padronizar as instruções de tiro policial para 100% do efetivo da unidade;\n3. Reduzir riscos de incidentes por meio do adestramento técnico contínuo.`;
-    if (isViatura) return `1. Adquirir viaturas com especificações táticas adequadas à topografia e mancha criminal local;\n2. Aumentar a presença policial ostensiva em áreas de vulnerabilidade social;\n3. Reduzir o tempo médio de deslocamento para atendimento de ocorrências graves.`;
-    
-    return draft
-      ? `${draft}\n- Realizar a entrega técnica e alocação imediata dos bens adquiridos na rotina de serviço;\n- Garantir a conformidade dos equipamentos aos padrões normativos da SSP/SE.`
-      : `1. Executar a aquisição integral dos itens previstos para atendimento da ${lotacao};\n2. Qualificar o suporte logístico das operações policiais na área de cobertura;\n3. Atingir as metas de produtividade institucional estabelecidas pela SSP/SE.`;
+    if (isHospital && isReforma) {
+      return `1. Reestruturar e modernizar as alas de atendimento ambulatorial, pronto atendimento e internação do hospital;\n2. Atualizar as redes elétrica, hidráulica e de climatização para suporte seguro aos equipamentos hospitalares;\n3. Expandir em 30% a capacidade mensal de consultas, exames e procedimentos assistenciais;\n4. Adequar os acessos e dependências às normas da vigilância sanitária (ANVISA) e acessibilidade (NBR 9050).`;
+    }
+    if (isHospital) {
+      return `1. Incorporar ${materialsSummary} aos setores médicos prioritários da unidade;\n2. Reduzir em 25% o tempo médio de espera para atendimentos e exames diagnósticos;\n3. Capacitar 100% da equipe assistencial na operação e manutenção preventiva dos equipamentos.`;
+    }
+    if (isReforma) {
+      return `1. Corrigir patologias estruturais de cobertura, alvenaria, piso e instalações prediais da ${lotacao};\n2. Garantir ambientes climatizados, acessíveis e salubres para o efetivo e para o cidadão;\n3. Otimizar a distribuição dos setores internos para elevar a produtividade dos serviços prestados.`;
+    }
+    if (isTiro) {
+      return `1. Adequar o estande com sistemas de proteção balística, contenção de projéteis e isolamento acústico normatizados;\n2. Viabilizar ciclos contínuos de instrução de tiro policial para 100% do efetivo da ${lotacao};\n3. Reduzir riscos de incidentes e elevar o nível de proficiência técnica da tropa em ocorrências reais.`;
+    }
+    if (isViatura) {
+      return `1. Incorporar ${materialsSummary} às escalas regulares de policiamento ostensivo da ${lotacao};\n2. Ampliar a cobertura preventiva nos setores críticos mapeados pela CEACRIM/SSP;\n3. Reduzir o tempo médio de resposta às solicitações emergenciais via CIOSP.`;
+    }
+    if (isMulher) {
+      return `1. Estruturar meios dedicados para o atendimento acolhedor e não revitimizador às vítimas;\n2. Ampliar em 50% as visitas de acompanhamento de Medidas Protetivas de Urgência;\n3. Integrar o fluxo de atendimento entre a ${lotacao}, o DAGV/SSP e o Poder Judiciário sergipano.`;
+    }
+    if (isSaude) {
+      return `1. Implantar ${materialsSummary} em ambiente adequado na sede da ${lotacao};\n2. Estruturar cronograma regular de utilização e acompanhamento preventivo de saúde do efetivo;\n3. Reduzir índices de fadiga, lesões ocupacionais e absenteísmo médico na unidade.`;
+    }
+    return `1. Implementar integralmente ${materialsSummary} em atendimento direto às demandas da ${lotacao};\n2. Adequar os processos internos e capacitar os servidores envolvidos para o uso pleno dos recursos em até 30 dias após a entrega;\n3. Elevar os indicadores de qualidade e regularidade do serviço prestado à população sergipana.`;
   }
 
   if (fieldKey === 'justificativa') {
-    if (isHospital && isReforma) return `A infraestrutura atual do hospital policial encontra-se defasada, limitando a capacidade de atendimento e comprometendo a salubridade necessária para procedimentos médicos. A reforma estrutural do prédio não é apenas uma melhoria estética, mas uma necessidade estratégica para garantir que o policial militar e seus dependentes tenham acesso a um serviço de saúde digno, moderno e eficiente, refletindo diretamente na motivação e prontidão da tropa.`;
-    if (isHospital) return `A modernização tecnológica do HPM é fundamental para acompanhar a evolução da medicina assistencial. A aquisição de novos meios soluciona gargalos de diagnóstico e permite que a segurança pública de Sergipe conte com profissionais de saúde devidamente equipados para salvar vidas e manter a saúde do efetivo.`;
-    if (isReforma) return `O prédio da ${lotacao} apresenta sinais de desgaste temporal que impactam na rotina operacional e na moral da tropa. A revitalização das instalações assegura um ambiente de trabalho salubre, seguro e funcional, permitindo que o foco da unidade seja integralmente voltado para a preservação da ordem pública.`;
-    if (isTiro) return `O treinamento constante é o pilar fundamental do uso legítimo da força. Atualmente, a ${lotacao} carece de local apropriado para prática de tiro, o que impõe riscos operacionais. A implantação deste estande garante a prontidão técnica permanente da tropa, assegurando que o policial atue com precisão técnica e segurança jurídica.`;
-    if (isViatura) return `A mobilidade ágil é fator decisivo na prevenção criminal. O desgaste da frota atual compromete a continuidade do policiamento preventivo. A renovação dos veículos permitirá a ocupação territorial efetiva das manchas criminais identificadas pela SSP/SE, garantindo o socorro imediato ao cidadão.`;
-
-    return draft
-      ? `${draft}\n\nDiante do diagnóstico da ${lotacao}, a presente aquisição apresenta-se indispensável para suprir carências logísticas e assegurar a regularidade ininterrupta dos serviços prestados à sociedade.`
-      : `A ${lotacao} desempenha papel fundamental na preservação da ordem pública. A execução deste projeto viabiliza a solução imediata dos gargalos logísticos diagnosticados, elevando a segurança dos servidores e a efetividade do atendimento à população sergipana.`;
-  }
-
-  if (fieldKey === 'metas') {
-    return `1. Concluir 100% da implantação do projeto em até 60 dias após recebimento dos bens ou conclusão da obra;\n2. Alcançar a capacitação técnica de todo o efetivo usuário em 30 dias;\n3. Manter a disponibilidade operacional dos itens superior a 95% no primeiro ano de uso.`;
-  }
-
-  if (fieldKey === 'sustentabilidade') {
-    return `A manutenção preventiva e corretiva será absorvida pelos contratos corporativos contínuos da Secretaria de Estado da Segurança Pública (SSP/SE). Os equipamentos e obras possuem vida útil estimada superior a 10 anos, com garantia técnica dos fornecedores e suporte logístico da PMSE.`;
-  }
-
-  if (fieldKey === 'mensuracaoResultados') {
-    return `Monitoramento mensal via Relatórios de Ocorrência Policial (ROP) ou Indicadores de Gestão Hospitalar, estatísticas da CEACRIM/SSP e avaliações de desempenho operacional da ${lotacao}, correlacionando investimento e produtividade institucional.`;
-  }
-
-  if (fieldKey === 'titulo') {
-    if (isHospital && isReforma) return `Reforma, Modernização e Adequação Técnica das Instalações do Hospital da Polícia Militar (HPM/SE)`;
-    if (isHospital) return `Modernização Tecnológica e Reaparelhamento dos Serviços Médico-Hospitalares do HPM/SE`;
-    if (isReforma) return `Revitalização Estrutural e Adequação de Infraestrutura da ${lotacao}`;
-    if (isTiro) return `Aperfeiçoamento Técnico e Implantação de Estande de Tiro para a ${lotacao}`;
-    if (isViatura) return `Modernização da Frota e Fortalecimento do Policiamento Ostensivo da ${lotacao}`;
-    if (isSaude) return `Promoção da Saúde Ocupacional e Valorização dos Profissionais da ${lotacao}`;
-    if (area === 'MVI') return 'Modernização Logística e Reaparelhamento Operacional para Redução da Letalidade Criminal (MVI)';
-    if (area === 'EVM') return 'Implementação de Rede de Proteção e Fortalecimento da Patrulha Maria da Penha (EVM)';
-    return 'Projeto de Melhoria da Qualidade de Vida e Valorização Profissional (MQV)';
+    if (isHospital && isReforma) {
+      return `As instalações físicas atuais do ${lotacao} apresentam desgaste acumulado pelo tempo de uso contínuo, comprometendo o conforto assistencial, a eficiência dos fluxos clínicos e a adequação integral às normas sanitárias e de acessibilidade vigentes.\n\nA reforma e modernização predial propostas são estratégicas para ampliar a capacidade de atendimento, incorporar novos serviços com segurança elétrica e estrutural e proporcionar ambiente digno aos policiais militares, demais profissionais da segurança pública e seus dependentes, refletindo diretamente na prontidão e valorização do efetivo em Sergipe.`;
+    }
+    if (isReforma) {
+      return `A estrutura física da ${lotacao} apresenta limitações decorrentes da degradação natural de suas dependências e sistemas prediais, o que prejudica a salubridade do trabalho diário e a qualidade do atendimento prestado.\n\nA execução da reforma corrige tais vulnerabilidades estruturais, adequa os espaços às normas técnicas aplicáveis e garante condições dignas e funcionais para o desempenho contínuo das atribuições institucionais.`;
+    }
+    if (isTiro) {
+      return `O adestramento técnico contínuo em armamento e tiro é requisito essencial para a atuação segura e legítima dos profissionais de segurança pública. A ausência de estrutura adequada na ${lotacao} obriga deslocamentos onerosos e restringe a frequência das instruções práticas.\n\nCom a implantação deste projeto utilizando ${materialsSummary}, a unidade assegura treinamento periódico em ambiente controlado e seguro, elevando a precisão técnica e mitigando riscos operacionais tanto para o policial quanto para a população.`;
+    }
+    if (isViatura) {
+      return `A dinâmica da criminalidade exige mobilidade ágil e presença ostensiva contínua nos territórios de maior vulnerabilidade. A defasagem e o alto custo de manutenção da frota atual comprometem a regularidade das rondas na circunscrição da ${lotacao}.\n\nA aquisição de ${materialsSummary} restabelece a plena capacidade operacional das guarnições nas áreas apontadas pela CEACRIM/SSP, ampliando a prevenção qualificada e a preservação da vida em Sergipe.`;
+    }
+    if (isMulher) {
+      return `O enfrentamento à violência doméstica contra a mulher requer resposta estatal rápida, especializada e humanizada para evitar a escalada das agressões e o feminicídio. A carência de meios dedicados limita o alcance das visitas preventivas.\n\nA implementação de ${materialsSummary} na ${lotacao} fortalece a fiscalização das Medidas Protetivas de Urgência e assegura acolhimento digno às vítimas na região atendida.`;
+    }
+    if (isSaude) {
+      return `O exercício profissional na segurança pública envolve turnos extensos, elevada carga física e exposição contínua a fatores de estresse ocupacional. Sem condições adequadas de prevenção em saúde e descanso salubre, elevam-se os riscos de adoecimento e afastamento do efetivo.\n\nAo investir em ${materialsSummary} para a ${lotacao}, a SSP/SE promove a valorização humana do servidor e assegura maior longevidade e disposição funcional.`;
+    }
+    return `A ${lotacao} enfrenta limitações estruturais e operacionais que impactam diretamente a qualidade e a continuidade das atividades vinculadas a "${titleRaw || 'esta proposta'}".\n\nA viabilização de ${materialsSummary} soluciona de forma objetiva o déficit diagnosticado, alinhando a gestão aos critérios técnicos da Portaria SSP nº 1998/2025 e garantindo retorno concreto à sociedade sergipana.`;
   }
 
   if (fieldKey === 'publicoAlvoDireto') {
-    return `Policiais militares, servidores de segurança pública e profissionais de saúde lotados na ${lotacao}, que utilizarão os meios diretamente em suas atividades diárias.`;
+    if (isHospital) {
+      return `Profissionais de saúde, militares e servidores atendidos regularmente nas instalações do ${lotacao}, estimados em mais de 400 atendimentos mensais diretos.`;
+    }
+    return `Profissionais de segurança pública e colaboradores lotados na ${lotacao} (aproximadamente 120 servidores) que utilizarão diretamente ${materialsSummary} em suas atividades.`;
   }
 
   if (fieldKey === 'publicoAlvoIndireto') {
-    return `A população do Estado de Sergipe e os dependentes dos servidores atendidos pela ${lotacao}, beneficiados pelo aumento da eficiência estatal e pela melhoria na qualidade dos serviços prestados.`;
+    if (isHospital) {
+      return `Todo o efetivo da ativa, reserva, pensionistas e dependentes vinculados à Segurança Pública do Estado de Sergipe beneficiados pela ampliação da rede assistencial do ${lotacao}.`;
+    }
+    return `População residente e flutuante da circunscrição atendida pela ${lotacao} no Estado de Sergipe, beneficiada pela melhoria contínua na prestação do serviço público.`;
+  }
+
+  if (fieldKey === 'resultadosEsperados') {
+    if (isHospital && isReforma) {
+      return `- Ampliação de pelo menos 30% na capacidade de atendimentos ambulatoriais e hospitalares;\n- Adequação plena das instalações às exigências sanitárias, elétricas e de acessibilidade;\n- Redução no tempo médio de espera e maior satisfação dos servidores e dependentes atendidos.`;
+    }
+    if (isReforma) {
+      return `- Eliminação das falhas prediais e melhoria comprovada na salubridade e segurança do ambiente;\n- Redução de gastos emergenciais com reparos corretivos;\n- Elevação da eficiência administrativa e do conforto para servidores e cidadãos.`;
+    }
+    if (isTiro) {
+      return `- 100% do efetivo da unidade avaliado e reciclado em instruções periódicas de tiro policial;\n- Redução de custos com deslocamento de tropas para treinamentos externos;\n- Maior segurança técnica e controle emocional em ocorrências com emprego de arma de fogo.`;
+    }
+    return `- Execução integral de ${materialsSummary} dentro do cronograma previsto;\n- Melhoria mensurável nos indicadores operacionais ou assistenciais da ${lotacao};\n- Uso eficiente dos recursos públicos em conformidade com a Portaria SSP nº 1998/2025.`;
+  }
+
+  if (fieldKey === 'metas') {
+    if (isHospital && isReforma) {
+      return `1. Concluir 100% das etapas de reforma e adequação predial no prazo previsto em cronograma físico-financeiro;\n2. Entregar as novas alas e sistemas em plena operação em até 30 dias após o recebimento definitivo da obra;\n3. Expandir em 30% o volume mensal de atendimentos no primeiro semestre pós-entrega.`;
+    }
+    return `1. Concluir 100% da entrega, instalação ou execução de ${materialsSummary} em até 60 dias após a contratação;\n2. Capacitar 100% dos usuários responsáveis no prazo de 15 dias após o recebimento técnico;\n3. Manter disponibilidade operacional superior a 95% ao longo dos primeiros 12 meses.`;
+  }
+
+  if (fieldKey === 'sustentabilidade') {
+    return `A manutenção preventiva e corretiva pós-implantação será absorvida pelos contratos contínuos e pela dotação orçamentária regular da SSP/SE e PMSE. Os bens permanentes e intervenções possuem garantia contratual vigente e vida útil estimada superior a 10 anos, em conformidade com o Manual de Contabilidade Aplicado ao Setor Público (MCASP).`;
+  }
+
+  if (fieldKey === 'mensuracaoResultados') {
+    if (isHospital) {
+      return `Monitoramento mensal por meio de relatórios estatísticos de atendimentos, prontuários e indicadores assistenciais da Diretoria de Saúde / ${lotacao}, comparando volume e tempo de espera antes e depois da implantação.`;
+    }
+    if (isReforma) {
+      return `Aferição por meio de relatórios de medição de engenharia, termo de recebimento definitivo, vistorias prediais semestrais e avaliação de redução de chamados corretivos de manutenção na ${lotacao}.`;
+    }
+    if (isTiro) {
+      return `Controle por meio de atas de instrução de tiro, listas de frequência do efetivo, índices individuais de aproveitamento técnico e relatórios semestrais da ${lotacao}.`;
+    }
+    return `Acompanhamento mensal por meio de relatórios operacionais (ROP), indicadores estatísticos da CEACRIM/SSP-SE e termos de entrega e disponibilidade da ${lotacao}.`;
   }
 
   if (fieldKey === 'pesquisaPrecosObservacoes') {
-    return `Pesquisa de preços fundamentada em atas de registro de preços vigentes, orçamentos formais de no mínimo 3 (três) fornecedores especializados ou tabelas oficiais de referência (SINAPI para obras), observando a Portaria SSP nº 1998/2025.`;
+    return isReforma
+      ? `Orçamento referenciado em tabelas oficiais de obras e serviços de engenharia (SINAPI/ORSE-SE), complementado por composições de mercado e no mínimo 03 cotações válidas, em observância à Lei nº 14.133/2021 e ao Art. 5º da Portaria SSP nº 1998/2025.`
+      : `Pesquisa de preços fundamentada no Painel de Preços do Governo Federal (Compras.gov.br), atas de Registro de Preços vigentes e no mínimo 03 (três) orçamentos formais não discrepantes entre si, conforme a Lei nº 14.133/2021 e o Art. 5º da Portaria SSP nº 1998/2025.`;
   }
 
   if (fieldKey === 'implementacao') {
-    return `1. Licitação/Contratação e início das etapas (15 dias);\n2. Execução técnica, recebimento e inspeção (30-60 dias);\n3. Tombamento patrimonial e início imediato do pleno uso das instalações/equipamentos.`;
+    return isReforma
+      ? `1. Formalização contratual e emissão da ordem de serviço (15 dias);\n2. Execução das etapas de reforma e adequação com fiscalização técnica contínua (60 a 90 dias);\n3. Vistoria final, termo de recebimento definitivo e liberação imediata para uso pela ${lotacao} (10 dias).`
+      : `1. Recebimento e conferência técnica pela Comissão Designada da SSP/PMSE (15 dias);\n2. Tombamento e incorporação patrimonial junto à Diretoria de Apoio Logístico - DAL/PMSE (10 dias);\n3. Capacitação de nivelamento para os usuários e entrada em operação regular na ${lotacao} (15 dias).`;
   }
 
-  return draft || `Proposta técnica elaborada para a ${lotacao} no âmbito do projeto conforme diretrizes da SSP/SE.`;
+  return draft || `Texto técnico estruturado para a ${lotacao} referente a "${titleRaw || materialsSummary}", conforme a Portaria SSP nº 1998/2025.`;
 }

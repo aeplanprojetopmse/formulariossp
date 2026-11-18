@@ -9,19 +9,11 @@ import {
   Plus,
   Trash2,
   RotateCcw,
-  Building2,
-  User,
-  Phone,
-  Mail,
   Shield,
   HeartHandshake,
   Dumbbell,
-  Dice5,
   Eye,
   Edit3,
-  Calendar,
-  AlertTriangle,
-  Layers,
   Settings,
   FolderOpen,
 } from 'lucide-react';
@@ -35,6 +27,7 @@ interface StepWizardProps {
   onChange: (updated: ProjectData) => void;
   onOpenAiAssistant: () => void;
   onOpenPdfPreview: () => void;
+  onOpenSendConfirmation: () => void;
   onOpenProjectList: () => void;
   onOpenSettings: () => void;
   onNewBlankProject: (area: ThematicArea) => void;
@@ -43,8 +36,9 @@ interface StepWizardProps {
 export const StepWizard: React.FC<StepWizardProps> = ({
   project,
   onChange,
-  onOpenAiAssistant,
+  onOpenAiAssistant: _onOpenAiAssistant,
   onOpenPdfPreview,
+  onOpenSendConfirmation,
   onOpenProjectList,
   onOpenSettings,
   onNewBlankProject,
@@ -1217,7 +1211,7 @@ export const StepWizard: React.FC<StepWizardProps> = ({
 
               <button
                 type="button"
-                onClick={onOpenPdfPreview}
+                onClick={onOpenSendConfirmation}
                 className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-8 py-3 text-xs font-black text-white bg-blue-600 hover:bg-blue-500 rounded-xl shadow-lg shadow-blue-950/40 transition-all hover:scale-102 cursor-pointer"
               >
                 <Send className="w-4 h-4 text-white" />
@@ -1233,11 +1227,11 @@ export const StepWizard: React.FC<StepWizardProps> = ({
               <span className="text-xs text-slate-500 font-normal">Clique no botão editar para ajustar qualquer campo</span>
             </h3>
 
-            {/* Responsável e Contato */}
+            {/* Identificação, Título e Responsável */}
             <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                  Responsável Técnico & Lotação
+                  Identificação do Projeto & Responsável Técnico
                 </span>
                 <button
                   type="button"
@@ -1247,8 +1241,14 @@ export const StepWizard: React.FC<StepWizardProps> = ({
                   <Edit3 className="w-3 h-3" /> Editar
                 </button>
               </div>
+              <p className="text-xs text-slate-900">
+                <strong>Título do Projeto:</strong> {project.titulo || 'Não informado'}
+              </p>
               <p className="text-xs text-slate-700">
-                <strong>Nome:</strong> {project.responsavelTecnico || '-'}{' '}
+                <strong>Nº Proposta / Área:</strong> {project.numeroProposta || '-'} · {project.areaTematica}
+              </p>
+              <p className="text-xs text-slate-700">
+                <strong>Responsável Técnico:</strong> {project.responsavelTecnico || '-'}{' '}
                 {project.postoGraduacaoCargo ? `(${project.postoGraduacaoCargo})` : ''}
               </p>
               <p className="text-xs text-slate-700">
@@ -1365,7 +1365,7 @@ export const StepWizard: React.FC<StepWizardProps> = ({
                       <th className="p-2 text-right">Total</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100">
+                  <tbody className="divide-y divide-slate-100 tabular-nums">
                     {(project.materiaisServicos || []).map((m) => (
                       <tr key={m.id}>
                         <td className="p-2 font-medium">{m.materialServico || '-'}</td>
@@ -1379,6 +1379,61 @@ export const StepWizard: React.FC<StepWizardProps> = ({
                     ))}
                   </tbody>
                 </table>
+              </div>
+            </div>
+
+            {/* Sustentabilidade & Mensuração */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                    VII. Sustentabilidade & VIII. Mensuração
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentStep(7)}
+                    className="text-xs text-blue-700 hover:underline flex items-center gap-1 font-semibold cursor-pointer"
+                  >
+                    <Edit3 className="w-3 h-3" /> Editar
+                  </button>
+                </div>
+                <p className="text-xs text-slate-700 line-clamp-3">
+                  <strong>Sustentabilidade:</strong> {project.sustentabilidade || '-'}
+                </p>
+                <p className="text-xs text-slate-700 line-clamp-3">
+                  <strong>Mensuração:</strong> {project.mensuracaoResultados || '-'}
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                    IX. Localização & XI. Implementação
+                  </span>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setCurrentStep(8)}
+                      className="text-xs text-blue-700 hover:underline flex items-center gap-1 font-semibold cursor-pointer"
+                    >
+                      <Edit3 className="w-3 h-3" /> Locais
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentStep(10)}
+                      className="text-xs text-blue-700 hover:underline flex items-center gap-1 font-semibold cursor-pointer"
+                    >
+                      <Edit3 className="w-3 h-3" /> Cronograma
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-700">
+                  <strong>Locais de Instalação:</strong>{' '}
+                  {(project.planoLocalizacao || []).filter((l) => l.item || l.endereco).length} registro(s)
+                </p>
+                <p className="text-xs text-slate-700 line-clamp-3">
+                  <strong>Implementação:</strong> {project.implementacao || '-'}
+                </p>
               </div>
             </div>
           </div>
@@ -1435,7 +1490,7 @@ export const StepWizard: React.FC<StepWizardProps> = ({
           ) : (
             <button
               type="button"
-              onClick={onOpenPdfPreview}
+              onClick={onOpenSendConfirmation}
               className="inline-flex items-center gap-2 px-6 py-2 text-xs font-black rounded-xl bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-950/40 transition-all cursor-pointer hover:scale-102"
             >
               <Send className="w-4 h-4" />

@@ -13,6 +13,7 @@ import { AiAssistantModal } from './components/AiAssistantModal';
 import { PdfPreviewModal } from './components/PdfPreviewModal';
 import { ProjectListModal } from './components/ProjectListModal';
 import { SettingsModal } from './components/SettingsModal';
+import { AiStatusToast } from './components/AiStatusToast';
 
 const STORAGE_KEY = 'SSP_SE_FPP_PROJECTS_V2_BLANK';
 const ACTIVE_ID_KEY = 'SSP_SE_FPP_ACTIVE_ID_V2';
@@ -47,6 +48,7 @@ export default function App() {
   // Modal States
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
+  const [pdfModalInitialStep, setPdfModalInitialStep] = useState<'preview' | 'confirm'>('preview');
   const [isListModalOpen, setIsListModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
@@ -148,12 +150,21 @@ export default function App() {
           project={currentProject}
           onChange={handleUpdateProject}
           onOpenAiAssistant={() => setIsAiModalOpen(true)}
-          onOpenPdfPreview={() => setIsPdfModalOpen(true)}
+          onOpenPdfPreview={() => {
+            setPdfModalInitialStep('preview');
+            setIsPdfModalOpen(true);
+          }}
+          onOpenSendConfirmation={() => {
+            setPdfModalInitialStep('confirm');
+            setIsPdfModalOpen(true);
+          }}
           onOpenProjectList={() => setIsListModalOpen(true)}
           onOpenSettings={() => setIsSettingsOpen(true)}
           onNewBlankProject={(area) => handleNewProject(area, true)}
         />
       </main>
+
+      <AiStatusToast />
 
       {/* Modals */}
       <AiAssistantModal
@@ -168,6 +179,7 @@ export default function App() {
         onClose={() => setIsPdfModalOpen(false)}
         project={currentProject}
         onUpdateProject={handleUpdateProject}
+        initialStep={pdfModalInitialStep}
       />
 
       <ProjectListModal

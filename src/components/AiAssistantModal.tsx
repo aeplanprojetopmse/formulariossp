@@ -282,7 +282,7 @@ export const AiAssistantModal: React.FC<AiAssistantModalProps> = ({
         {/* Modal Footer */}
         <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
           <span className="text-[11px] text-slate-500">
-            Powered by Google Gemini 3.8 Flash • Modelo Gratuito
+            Cascata gratuita: Gemini 3.8 Flash → 2.5 Flash → 3.1 Flash Lite → Offline
           </span>
           <div className="flex items-center gap-2">
             <button
