@@ -26,6 +26,7 @@ export interface AppsScriptGeminiResponse {
   quotaExhausted?: boolean;
   invalidApiKey?: boolean;
   noApiKey?: boolean;
+  permissionRequired?: boolean;
   error?: string;
 }
 
@@ -33,10 +34,12 @@ const LEGACY_SCRIPT_URLS = [
   'https://script.google.com/macros/s/AKfycbxRqa4OXU3dn-RqGshwxtqqOqoJ8plbkJBk6D9ZpGhE2xIK4R4MtuQoZq4iWI1nF25xlQ/exec',
   'https://script.google.com/macros/s/AKfycbxpRLMi9mMeSvkMD82pEJDK85uXknDUqV-zF2IoiWgjg5XJYpSCyRT8fCdxfIIORjPWEg/exec',
   'https://script.google.com/macros/s/AKfycbwGclaLbpujDGRMPRVky7oQR-hLsK0b431aMwqc6mgpDznAjgM4VeVXmF_c0VOMygjxMQ/exec',
+  'https://script.google.com/macros/s/AKfycbzrpI8RKqXI3QBF-7mCVnQOSLlQRXAnaJaDQ7U3T2CFlDb1jLkdg0JGuwANyNkm_cessg/exec',
+  'https://script.google.com/macros/s/AKfycbwMAP10qjBx7L6mPjD8jBA1oRWjDYkOXaFO3mXEdNGjlSod5yz6FDwksKTYZMIEyCqVVg/exec',
 ];
 
 export const DEFAULT_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbzrpI8RKqXI3QBF-7mCVnQOSLlQRXAnaJaDQ7U3T2CFlDb1jLkdg0JGuwANyNkm_cessg/exec';
+  'https://script.google.com/macros/s/AKfycbynqP9XbgIA6VTcQqPfXt4kxl2CLR3H5JaOaVr8s1Ws9VBJTEyXD3NX4740YqwYG0Gc0A/exec';
 
 let appsScriptGeminiUnsupported = false;
 
@@ -122,15 +125,22 @@ export async function callGeminiViaAppsScript(
       };
     }
 
+    const rawErrMsg = typeof parsed?.message === 'string' ? parsed.message : parsed?.error || '';
+    const isPermissionError =
+      rawErrMsg.includes('script.external_request') ||
+      rawErrMsg.includes('UrlFetchApp.fetch') ||
+      rawErrMsg.includes('do not have permission');
+
     return {
       supported: true,
       quotaExhausted: Boolean(parsed?.quotaExhausted),
       invalidApiKey: Boolean(parsed?.invalidApiKey),
       noApiKey: Boolean(parsed?.noApiKey),
+      permissionRequired: isPermissionError,
       quotaExhaustedModels: Array.isArray(parsed?.quotaExhaustedModels)
         ? parsed.quotaExhaustedModels
         : [],
-      error: parsed?.message || parsed?.error || 'Falha ao chamar Gemini via Apps Script.',
+      error: rawErrMsg || 'Falha ao chamar Gemini via Apps Script.',
     };
   } catch (err: any) {
     return {

@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, Key, Globe, Check, RotateCcw } from 'lucide-react';
-import { getStoredApiKey, saveStoredApiKey, DEFAULT_GEMINI_KEY } from '../services/geminiService';
+import { Settings, Globe, Check, RotateCcw, Sparkles } from 'lucide-react';
 import { getStoredScriptUrl, saveStoredScriptUrl, DEFAULT_SCRIPT_URL } from '../services/appsScriptService';
 
 interface SettingsModalProps {
@@ -9,14 +8,12 @@ interface SettingsModalProps {
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
-  const [apiKey, setApiKey] = useState(getStoredApiKey());
   const [scriptUrl, setScriptUrl] = useState(getStoredScriptUrl());
   const [saved, setSaved] = useState(false);
 
   if (!isOpen) return null;
 
   const handleSave = () => {
-    saveStoredApiKey(apiKey);
     saveStoredScriptUrl(scriptUrl);
     setSaved(true);
     setTimeout(() => {
@@ -26,7 +23,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   };
 
   const handleReset = () => {
-    setApiKey(DEFAULT_GEMINI_KEY);
     setScriptUrl(DEFAULT_SCRIPT_URL);
   };
 
@@ -41,7 +37,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             <div>
               <h3 className="text-base font-bold">Configurações de Integração</h3>
               <p className="text-xs text-slate-400">
-                Chave da API Gemini e Endpoint de Envio para a AEPLAN
+                Endpoint da AEPLAN (Google Apps Script) e Ponte de IA
               </p>
             </div>
           </div>
@@ -54,20 +50,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
         </div>
 
         <div className="p-6 space-y-4">
-          <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 flex items-center gap-1.5">
-              <Key className="w-3.5 h-3.5 text-indigo-600" />
-              Chave de API do Gemini (Google AI Studio):
-            </label>
-            <input
-              type="text"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Cole sua chave de API do Gemini..."
-              className="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-            />
-            <p className="text-[11px] text-slate-500 mt-1">
-              Cascata automática gratuita: <code>Gemini 3.1 Flash Lite</code> → <code>Gemini 4 Flash</code> → <code>Gemini 3.8 Flash</code> → <code>Offline</code>.
+          <div className="p-3.5 rounded-xl bg-indigo-50 border border-indigo-200 flex items-start gap-2.5">
+            <Sparkles className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+            <p className="text-[11px] text-indigo-900 leading-relaxed">
+              Cascata automática de IA gratuita: <code>Gemini 3.1 Flash Lite</code> →{' '}
+              <code>Gemini 4 Flash</code> → <code>Gemini 3.8 Flash</code> → <code>Offline</code>.
+              As credenciais são gerenciadas com segurança no servidor ou nas Propriedades do Google Apps Script.
             </p>
           </div>
 

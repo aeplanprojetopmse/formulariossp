@@ -71,14 +71,14 @@ function isModelNotFoundError(errMsg: string, status?: number): boolean {
 // Endpoint to generate content or suggestions with Gemini using free model cascade
 app.post('/api/gemini/generate', async (req: Request, res: Response) => {
   try {
-    const { prompt, systemInstruction, customApiKey } = req.body;
+    const { prompt, systemInstruction } = req.body;
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt é obrigatório.' });
     }
 
-    const effectiveKey = (customApiKey || DEFAULT_API_KEY || '').trim();
+    const effectiveKey = (process.env.GEMINI_API_KEY || DEFAULT_API_KEY || '').trim();
     if (!effectiveKey) {
-      return res.status(401).json({
+      return res.status(200).json({
         error: 'Nenhuma chave de API configurada no servidor.',
         noApiKey: true,
       });
@@ -124,12 +124,10 @@ app.post('/api/gemini/generate', async (req: Request, res: Response) => {
         const status = err?.status || err?.statusCode;
 
         if (isAuthError(errMsg)) {
-          console.warn(`Erro de autenticação na API Gemini (${modelEntry.id}):`, errMsg);
-          return res.status(401).json({
+          return res.status(200).json({
             error:
-              'Chave de API inválida ou sem permissão. Verifique a chave configurada em Settings > Secrets ou nas Configurações.',
+              'Chave de API inválida ou sem permissão. Verifique a chave configurada em Settings > Secrets.',
             invalidApiKey: true,
-            authReason: errMsg.slice(0, 160),
           });
         }
 
@@ -177,7 +175,7 @@ app.post('/api/send-proposal', async (req: Request, res: Response) => {
     } = req.body;
     const targetUrl =
       scriptUrl ||
-      'https://script.google.com/macros/s/AKfycbwMAP10qjBx7L6mPjD8jBA1oRWjDYkOXaFO3mXEdNGjlSod5yz6FDwksKTYZMIEyCqVVg/exec';
+      'https://script.google.com/macros/s/AKfycbxRGY6Yd_ow04sUDXSerCENtdvB9aTg2eCRGXcflgFJCO0mw9lf4JsiN2gNO1-W8ImSIQ/exec';
 
     if (!fileName || !base64Data) {
       return res.status(400).json({ error: 'fileName e base64Data são obrigatórios.' });

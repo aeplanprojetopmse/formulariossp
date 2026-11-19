@@ -1,17 +1,21 @@
 import { ProjectData, ThematicArea } from '../types';
 import { callGeminiViaAppsScript } from './appsScriptService';
 
-export const DEFAULT_GEMINI_KEY = '';
-
 export const FREE_MODEL_CASCADE = [
   { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite' },
   { id: 'gemini-4-hydrogen', label: 'Gemini 4 Flash' },
   { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
 ] as const;
 
-const CLIENT_QUOTA_COOLDOWN_MS = 60_000;
-const clientCooldownUntil: Record<string, number> = {};
 let backendProxyUnavailable = false;
+
+if (typeof window !== 'undefined') {
+  try {
+    localStorage.removeItem('SSP_GEMINI_API_KEY');
+  } catch {
+    // ignore storage restriction
+  }
+}
 
 function shouldSkipBackendProxy(): boolean {
   if (backendProxyUnavailable) return true;
@@ -65,68 +69,18 @@ function emitAiModelNotice(notice: Omit<AiModelNotice, 'id'>) {
   listeners.forEach((fn) => fn(fullNotice));
 }
 
-export function getStoredApiKey(): string {
-  if (typeof window !== 'undefined') {
-    const saved = localStorage.getItem('SSP_GEMINI_API_KEY');
-    if (saved && saved.trim()) {
-      return saved.trim();
-    }
-  }
-  return DEFAULT_GEMINI_KEY;
-}
-
-export function saveStoredApiKey(key: string): void {
-  if (typeof window !== 'undefined') {
-    localStorage.setItem('SSP_GEMINI_API_KEY', key.trim());
-  }
-}
-
-function isAuthStatusOrMessage(status: number, errorDetail: string): boolean {
-  return (
-    status === 401 ||
-    status === 403 ||
-    errorDetail.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') ||
-    errorDetail.includes('API key not valid') ||
-    errorDetail.includes('API_KEY_INVALID') ||
-    errorDetail.includes('PERMISSION_DENIED') ||
-    errorDetail.includes('UNAUTHENTICATED')
-  );
-}
-
-function isQuotaError(status: number, errorDetail: string): boolean {
-  const lower = errorDetail.toLowerCase();
-  return (
-    status === 429 ||
-    status === 503 ||
-    lower.includes('resource_exhausted') ||
-    lower.includes('429') ||
-    lower.includes('quota') ||
-    lower.includes('rate limit') ||
-    lower.includes('too many requests') ||
-    lower.includes('overloaded') ||
-    lower.includes('unavailable')
-  );
-}
-
-function isModelNotFound(status: number, errorDetail: string): boolean {
-  const lower = errorDetail.toLowerCase();
-  return status === 404 || lower.includes('not_found') || lower.includes('404');
-}
-
 /**
  * Sends a prompt to Gemini using the server-side proxy cascade first,
- * falling back to direct browser REST cascade (for static hosting) and returning
- * model metadata so the UI can notify the user.
+ * falling back to the Google Apps Script AI bridge (used on static hosts or when
+ * server Secrets are not configured) and returning model metadata for UI notices.
  */
 export async function callGeminiWithCascade(
   prompt: string,
-  systemInstruction?: string,
-  customKey?: string
+  systemInstruction?: string
 ): Promise<AiGenerationResult> {
-  const activeKey = (customKey || getStoredApiKey() || '').trim();
-  const accumulatedQuotaModels: string[] = [];
+  let serverErrorCode: string | null = null;
 
-  // 1. Try Server-Side API Proxy first when backend exists (uses server GEMINI_API_KEY or custom key)
+  // 1. Try Server-Side API Proxy first when backend exists (uses server process.env.GEMINI_API_KEY)
   if (!shouldSkipBackendProxy()) {
     try {
       const res = await fetch('/api/gemini/generate', {
@@ -135,7 +89,6 @@ export async function callGeminiWithCascade(
         body: JSON.stringify({
           prompt,
           systemInstruction,
-          customApiKey: activeKey || undefined,
         }),
       });
 
@@ -176,24 +129,16 @@ export async function callGeminiWithCascade(
           };
         }
 
-        if (data?.quotaExhaustedModels && Array.isArray(data.quotaExhaustedModels)) {
-          accumulatedQuotaModels.push(...data.quotaExhaustedModels);
-        }
-
         if (res.status === 429 || data?.quotaExhausted) {
           throw new Error('QUOTA_EXHAUSTED_ALL');
         }
 
         if (data?.invalidApiKey) {
-          throw new Error('INVALID_API_KEY');
-        }
-
-        if (data?.noApiKey) {
-          throw new Error('NO_VALID_CLIENT_KEY');
-        }
-
-        if (data?.error) {
-          throw new Error(data.error);
+          serverErrorCode = 'INVALID_API_KEY';
+        } else if (data?.noApiKey) {
+          serverErrorCode = 'NO_VALID_CLIENT_KEY';
+        } else if (data?.error) {
+          serverErrorCode = data.error;
         }
       }
     } catch (serverErr: any) {
@@ -201,158 +146,60 @@ export async function callGeminiWithCascade(
       if (msg === 'QUOTA_EXHAUSTED_ALL') {
         throw serverErr;
       }
-      if (
-        !msg.includes('Failed to fetch') &&
-        !msg.includes('NetworkError') &&
-        msg !== 'NO_VALID_CLIENT_KEY' &&
-        msg !== 'INVALID_API_KEY'
-      ) {
-        console.warn('Proxy respondeu com erro, verificando fallback...', msg);
-      }
     }
   }
 
-  // 2. If no explicit client key is saved locally, try the Google Apps Script AI bridge first
-  if (!activeKey) {
-    const bridgeRes = await callGeminiViaAppsScript(prompt, systemInstruction);
-    if (bridgeRes.supported) {
-      if (bridgeRes.text && bridgeRes.text.trim()) {
-        const modelId = bridgeRes.modelUsed || 'gemini-3.1-flash-lite';
-        const modelLabel = bridgeRes.modelLabel || 'Gemini 3.1 Flash Lite';
-        const exhausted = bridgeRes.quotaExhaustedModels || [];
+  // 2. Fallback to Google Apps Script AI bridge (static hosting or when server key is absent)
+  const bridgeRes = await callGeminiViaAppsScript(prompt, systemInstruction);
+  if (bridgeRes.supported) {
+    if (bridgeRes.text && bridgeRes.text.trim()) {
+      const modelId = bridgeRes.modelUsed || 'gemini-3.1-flash-lite';
+      const modelLabel = bridgeRes.modelLabel || 'Gemini 3.1 Flash Lite';
+      const exhausted = bridgeRes.quotaExhaustedModels || [];
 
-        emitAiModelNotice({
-          modelId,
-          modelLabel,
-          isOffline: false,
-          quotaExhausted: exhausted.length > 0,
-          quotaExhaustedModels: exhausted,
-          message:
-            exhausted.length > 0
-              ? `Cota atingida — usando ${modelLabel}`
-              : `Usando ${modelLabel}`,
-          detail:
-            exhausted.length > 0
-              ? `Cota esgotada em ${exhausted.join(', ')}. Alternado automaticamente via Apps Script.`
-              : 'Sugestão gerada via ponte segura do Apps Script.',
-        });
+      emitAiModelNotice({
+        modelId,
+        modelLabel,
+        isOffline: false,
+        quotaExhausted: exhausted.length > 0,
+        quotaExhaustedModels: exhausted,
+        message:
+          exhausted.length > 0
+            ? `Cota atingida — usando ${modelLabel}`
+            : `Usando ${modelLabel}`,
+        detail:
+          exhausted.length > 0
+            ? `Cota esgotada em ${exhausted.join(', ')}. Alternado automaticamente via Apps Script.`
+            : 'Sugestão gerada via ponte segura do Apps Script.',
+      });
 
-        return {
-          text: bridgeRes.text,
-          modelId,
-          modelLabel,
-          isOffline: false,
-          quotaExhaustedModels: exhausted,
-        };
-      }
-
-      if (bridgeRes.quotaExhausted) {
-        throw new Error('QUOTA_EXHAUSTED_ALL');
-      }
-      if (bridgeRes.invalidApiKey) {
-        throw new Error('INVALID_API_KEY');
-      }
-      if (bridgeRes.noApiKey) {
-        throw new Error('NO_VALID_CLIENT_KEY');
-      }
-    }
-
-    throw new Error('NO_VALID_CLIENT_KEY');
-  }
-
-  const now = Date.now();
-
-  for (const modelEntry of FREE_MODEL_CASCADE) {
-    if ((clientCooldownUntil[modelEntry.id] || 0) > now) {
-      accumulatedQuotaModels.push(modelEntry.label);
-      continue;
-    }
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelEntry.id}:generateContent?key=${encodeURIComponent(
-      activeKey
-    )}`;
-
-    const bodyPayload: any = {
-      contents: [{ parts: [{ text: prompt }] }],
-    };
-
-    if (systemInstruction) {
-      bodyPayload.systemInstruction = {
-        parts: [{ text: systemInstruction }],
+      return {
+        text: bridgeRes.text,
+        modelId,
+        modelLabel,
+        isOffline: false,
+        quotaExhaustedModels: exhausted,
       };
     }
 
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bodyPayload),
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text && text.trim()) {
-          emitAiModelNotice({
-            modelId: modelEntry.id,
-            modelLabel: modelEntry.label,
-            isOffline: false,
-            quotaExhausted: accumulatedQuotaModels.length > 0,
-            quotaExhaustedModels: accumulatedQuotaModels,
-            message:
-              accumulatedQuotaModels.length > 0
-                ? `Cota atingida — usando ${modelEntry.label}`
-                : `Usando ${modelEntry.label}`,
-            detail:
-              accumulatedQuotaModels.length > 0
-                ? `Cota esgotada em ${accumulatedQuotaModels.join(', ')}. Alternado automaticamente.`
-                : 'Sugestão gerada com o modelo gratuito prioritário.',
-          });
-
-          return {
-            text,
-            modelId: modelEntry.id,
-            modelLabel: modelEntry.label,
-            isOffline: false,
-            quotaExhaustedModels: accumulatedQuotaModels,
-          };
-        }
-      }
-
-      const errorText = await response.text().catch(() => '');
-      let errorDetail = errorText;
-      try {
-        const errJson = JSON.parse(errorText);
-        errorDetail = errJson.error?.message || errorText;
-      } catch {
-        // ignore parse failure
-      }
-
-      if (isAuthStatusOrMessage(response.status, errorDetail)) {
-        throw new Error('INVALID_API_KEY');
-      }
-
-      if (isQuotaError(response.status, errorDetail)) {
-        clientCooldownUntil[modelEntry.id] = Date.now() + CLIENT_QUOTA_COOLDOWN_MS;
-        accumulatedQuotaModels.push(modelEntry.label);
-        continue;
-      }
-
-      if (isModelNotFound(response.status, errorDetail)) {
-        continue;
-      }
-
-      throw new Error(`Erro na API do Gemini: ${errorDetail}`);
-    } catch (fetchErr: any) {
-      if (fetchErr?.message === 'INVALID_API_KEY' || fetchErr?.message?.startsWith('Erro na API')) {
-        throw fetchErr;
-      }
-      clientCooldownUntil[modelEntry.id] = Date.now() + CLIENT_QUOTA_COOLDOWN_MS;
-      accumulatedQuotaModels.push(modelEntry.label);
+    if (bridgeRes.permissionRequired) {
+      throw new Error('APPS_SCRIPT_PERMISSION_REQUIRED');
+    }
+    if (bridgeRes.quotaExhausted) {
+      throw new Error('QUOTA_EXHAUSTED_ALL');
+    }
+    if (bridgeRes.invalidApiKey) {
+      throw new Error('INVALID_API_KEY');
+    }
+    if (bridgeRes.noApiKey) {
+      throw new Error('NO_VALID_CLIENT_KEY');
+    }
+    if (bridgeRes.error) {
+      throw new Error(bridgeRes.error);
     }
   }
 
-  throw new Error('QUOTA_EXHAUSTED_ALL');
+  throw new Error(serverErrorCode || 'NO_VALID_CLIENT_KEY');
 }
 
 function getOfflineFallbackInfo(apiErr: any): {
@@ -364,14 +211,25 @@ function getOfflineFallbackInfo(apiErr: any): {
 } {
   const errCode = apiErr?.message || '';
 
+  if (errCode === 'APPS_SCRIPT_PERMISSION_REQUIRED') {
+    return {
+      quotaExhausted: false,
+      quotaExhaustedModels: [],
+      message: 'Apps Script sem permissão externa — usando sugestão offline',
+      detail:
+        'Autorize a permissão UrlFetchApp no editor do Google Apps Script (execute uma função de teste uma vez e implante Nova versão).',
+      modelLabel: 'Sugestão Offline (Permissão Apps Script pendente)',
+    };
+  }
+
   if (errCode === 'NO_VALID_CLIENT_KEY') {
     return {
       quotaExhausted: false,
       quotaExhaustedModels: [],
       message: 'Chave Gemini não configurada — usando sugestão offline',
       detail: shouldSkipBackendProxy()
-        ? 'O GitHub Pages é estático (sem servidor). Abra o app pelo link do AI Studio ou informe uma chave Gemini gratuita nas Configurações.'
-        : 'Nenhuma chave de API configurada no servidor. Configure GEMINI_API_KEY em Settings > Secrets ou nas Configurações.',
+        ? 'Configure a propriedade GEMINI_API_KEY nas Propriedades do Google Apps Script para ativar a IA online no GitHub Pages.'
+        : 'Configure GEMINI_API_KEY em Settings > Secrets ou nas Propriedades do Google Apps Script.',
       modelLabel: 'Sugestão Offline (Sem chave configurada)',
     };
   }
@@ -382,7 +240,7 @@ function getOfflineFallbackInfo(apiErr: any): {
       quotaExhaustedModels: [],
       message: 'Chave de API inválida — usando sugestão offline',
       detail:
-        'A chave configurada em Settings > Secrets, no Apps Script ou nas Configurações foi recusada pela API Gemini.',
+        'A chave configurada em Settings > Secrets ou nas Propriedades do Google Apps Script foi recusada pela API Gemini.',
       modelLabel: 'Sugestão Offline (Chave recusada)',
     };
   }
